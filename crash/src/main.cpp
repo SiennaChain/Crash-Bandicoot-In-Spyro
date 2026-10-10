@@ -117,7 +117,9 @@ std::atomic<uint32_t> g_generation{0};
 std::atomic<uintptr_t> g_strangeActor{0};
 std::atomic<int> g_padOnlyInFront{1};  // [pad] only_in_front
 std::atomic<int> g_steerBySpyro{1};    // [ground] steer_by_spyro
-std::atomic<int> g_hideOwnLevel{1};    // [ground] hide_own_level
+// [ground] hide_own_level: 0 nothing; 1 the level's still meshes (its ground
+// and walls); 2 every still body of the level's (crates and triggers too).
+std::atomic<int> g_hideOwnLevel{2};
 // The way Crash's own camera looks over the ground, as of his last frame.
 std::atomic<float> g_aheadX{0.0f}, g_aheadY{0.0f};
 
@@ -127,7 +129,7 @@ void LoadPlaces(const Config& config) {
 #undef X
   g_padOnlyInFront.store(config.GetInt("pad", "only_in_front", 1));
   g_steerBySpyro.store(config.GetInt("ground", "steer_by_spyro", 1));
-  g_hideOwnLevel.store(config.GetInt("ground", "hide_own_level", 1));
+  g_hideOwnLevel.store(config.GetInt("ground", "hide_own_level", 2));
 }
 
 // Crash goes where the stick points as *his* camera sees it, and nobody is
@@ -654,7 +656,8 @@ void DropPiece(Piece& piece, uintptr_t world) {
 
 void HideOwnLevel(const Physics& physics) {
   SpyroGround& g = g_spyroGround;
-  if (!g_hideOwnLevel.load() || g.hiddenWorld == physics.world) return;
+  const int how = g_hideOwnLevel.load();
+  if (!how || g.hiddenWorld == physics.world) return;
   const Places& p = g_places;
   const uintptr_t remove = mem::ImageBase() + p.removeBodies;
   if (!mem::StartsWith(remove, kRemoveBodiesPrefix)) {
@@ -667,13 +670,17 @@ void HideOwnLevel(const Physics& physics) {
     Body body{};
     if (!ReadBody(bodies, number, body)) break;
     if (!body.shape || body.motion != 0 || (body.flags & 0x400) || number == g.now.body) continue;
-    if (mem::IsA(body.shape, p.compressedMeshVtable) || mem::IsA(body.shape, p.staticCompoundVtable)) g.hidden.push_back(number);
+    bool ours = false;
+    for (const Made& made : g_made) ours = ours || (made.world == physics.world && made.body == number);
+    if (ours) continue;
+    if (how >= 2 || mem::IsA(body.shape, p.compressedMeshVtable) || mem::IsA(body.shape, p.staticCompoundVtable)) g.hidden.push_back(number);
   }
   g.hiddenWorld = physics.world;
   if (g.hidden.empty()) return;
   using RemoveBodies = void (*)(void* world, const uint32_t* numbers, int count, int activation);
   reinterpret_cast<RemoveBodies>(remove)(reinterpret_cast<void*>(physics.world), g.hidden.data(), static_cast<int>(g.hidden.size()), 1);
-  log::Info("ground: took the level's own %zu still meshes out of the world (the first is body %u)", g.hidden.size(), g.hidden[0]);
+  log::Info("ground: took the level's own %zu still %s out of the world (the first is body %u)", g.hidden.size(),
+            how >= 2 ? "bodies" : "meshes", g.hidden[0]);
 }
 
 void ShowOwnLevel(uintptr_t world) {
@@ -691,7 +698,7 @@ void ShowOwnLevel(uintptr_t world) {
       using AddBodies = void (*)(void* world, const uint32_t* numbers, int count, int mode, uint8_t flags);
       reinterpret_cast<AddBodies>(add)(reinterpret_cast<void*>(world), back.data(), static_cast<int>(back.size()), 2, 0);
     }
-    log::Info("ground: put %zu of the level's own %zu meshes back", back.size(), g.hidden.size());
+    log::Info("ground: put %zu of the level's own %zu bodies back", back.size(), g.hidden.size());
   }
   g.hidden.clear();
   g.hiddenWorld = 0;

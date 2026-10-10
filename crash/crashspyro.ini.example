@@ -38,9 +38,10 @@ only_in_front = 1
 ; 1 = the stick is turned from Crash's camera to Spyro's before Crash hears
 ; it, so he goes where the player, looking at Spyro's picture, points.
 steer_by_spyro = 1
-; 1 = the level's own ground and walls are taken out of Crash's physics
-; meanwhile, and put back afterwards.
-hide_own_level = 1
+; What of Crash's own level is taken out of his physics meanwhile, and put
+; back afterwards: 2 = everything of it that stands still (ground, walls,
+; crates), 1 = only its ground and walls, 0 = nothing.
+hide_own_level = 2
 
 [places]
 ; Where things are in the one build of the exe the mod knows (see

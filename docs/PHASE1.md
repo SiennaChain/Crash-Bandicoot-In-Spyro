@@ -355,12 +355,14 @@ ground is being sent (`kHostGround`):
   over), and made into one `hknpExternMeshShape` body at the join. 18,772
   triangles took **22.8 ms**, tree and all.
 - The ground before it is destroyed four frames after the new one goes in.
-- The level's own still bodies with mesh or compound shapes (three in the
-  hub) are taken out of the world with `hknpWorld::removeBodies`
-  (`exe+0x10E64C0`) and put back with `addBodies` (`exe+0x10E5EA0`,
-  `(world, numbers, how many, 2, 0)`) when Spyro stops sending. Without
-  this he would stand on whichever ground was higher. `[ground]
-  hide_own_level = 0` leaves them in.
+- The level's own still bodies are taken out of the world with
+  `hknpWorld::removeBodies` (`exe+0x10E64C0`) and put back with `addBodies`
+  (`exe+0x10E5EA0`, `(world, numbers, how many, 2, 0)`) when Spyro stops
+  sending. Without this he would stand on whichever ground was higher, and
+  walk into crates nobody can see. `[ground] hide_own_level`: 2 (the
+  default) is every still body, 1 only those with mesh or compound shapes
+  (the ground and walls: three in the hub), 0 none. Bodies of the level's
+  that move (many triggers are among them) are left alone so far.
 
 **Steering.** Crash goes where the stick points as *his* camera sees it,
 and nobody is looking through his camera. Rather than move his camera, the
@@ -398,6 +400,76 @@ The first step forward shows the pawn moving 77 for Crash's 49: Crash was
 still walking in from the hub's entrance when following began, and the
 table's first row is from just before.
 
+## A flat world for Crash to be in
+
+Crash's own level should be nothing but somewhere to exist. Two things the
+game already has make that easy, both learnt from the source of the
+community level editor (Crash NST Maker), neither needing it:
+
+- **`-om <level>` on the game's command line boots straight into a level**:
+  no opening videos, no title screen, no save, no hub.
+  `steam.exe -applaunch 731490 -om crash3/l300_hub/l300_hub` has the
+  player on foot **10 s** after launch; pressing through the title screen
+  took 61. The level is named as the bridge already reports it.
+- **The game ships its developers' test rooms**, three "white rooms":
+
+| `-om` | What happened |
+|---|---|
+| `whiterooms/wr_crates/crash_crates/crash_crates` | A flat floor with every kind of crate on it. Player on foot in 9 s, and he answers the controller. **The one to use.** |
+| `whiterooms/wr_c3_levelendtest/wr_c3_levelendtest` | A room of 8 bodies: the floor, three crates, a level end. Player on foot in 9 s, but he does **not** answer the controller there (not looked into) |
+| `whiterooms/wr_c2_levelendtest/wr_c2_levelendtest` | Not tried |
+
+The join in the crate room, 2026-10-10: Spyro's ground went in, 220 of the
+room's 379 bodies came out (its floor and its still crates), and Crash was
+walked round a square on Spyro's ground back to where he began, the ground
+24.2 under Spyro's pawn throughout. Following off put 205 back (the other
+15 were no longer out, or no longer there). About 160 bodies of the room's
+that move stay in the world, 82 of them triggers: things he could still
+touch without anyone seeing them.
+
+### The empty level
+
+An empty level made with the editor has none of that, and one was made
+(2026-10-10, Crash NST Maker 1.45): New Level, base level "none", mode
+Crash 3; then every crate, the power crystal, the level end teleporter and
+its crate counter deleted, and the death plane (Other, WorldInstance)
+moved from -2000 to -30000 so that Spyro's lower ground is not below it.
+What is left is a start, two cameras, a light, music and one platform. The
+platform (a static model, `Pltfrm05_01`) was then scaled 20 by 80 by 1, so
+that there is room to try everything Crash does without Spyro: its
+collision is rebuilt to match when the level is saved, and in the game it
+measures about 467 m by 420 m (roughly -9,100 to 9,300 of Crash's units
+along x and -6,600 to 9,900 along y), still flat, its top at 0.
+
+| | |
+|---|---|
+| `-om` | `crash1/custom_level/custom_level` (under `crash1` whatever the mode) |
+| Player on foot | 10 s after launch, and he answers the controller |
+| **Bodies in its physics world** | **2: Crash and the platform** |
+
+The join there: Spyro's ground in, the platform out, and the world holds
+nothing but Crash and Spyro's ground. Walked round a square on it, the
+ground 24.2 under Spyro's pawn throughout.
+
+When following ends the platform comes back, but Crash is wherever he
+walked to, which is usually not over it: he falls to the death plane and
+starts again on the platform. That is the reset, for now. (With the
+platform as big as it now is, he is more often still over it, and simply
+lands on it.)
+
+**What it puts in the game's folder.** Running a custom level is not free
+of the game's files, whatever the editor's page says. Its Play button
+copied the level to `archives\Custom_Level.pak` (165 MB) and wrote
+`archives\update.pak` (72 KB), a patch to the game's list of levels, and
+then started the game with `-om`. Nothing of the game's own was changed.
+Deleting those two files undoes it (the editor's "Unmod game" does the
+same). With them in place, `steam.exe -applaunch 731490 -om
+crash1/custom_level/custom_level` starts the level without the editor.
+
+The level itself is kept outside this repository: it is built from the
+game's assets. The editor can export one as a small file holding only what
+was changed, which is how the mod could carry it later.
+
 ## To do, in order
 
 1. ~~Crash side: how a body gets into the world.~~ Done: "Making a body".
@@ -412,8 +484,8 @@ table's first row is from just before.
 7. ~~Steer Crash by Spyro's camera.~~ Done by turning the stick: "Steering".
 8. Played by hand: a wall, a ledge up and a ledge down, a jump across a gap,
    in more than one place. This is what "done" above asks for.
-9. Crash's own level out of the way altogether, not just its ground: an
-   empty level of his own to stand in (the N. Sane Trilogy level editor
-   makes one), or its triggers taken out as its meshes are.
+9. ~~Crash's own level out of the way altogether.~~ Done: "The empty
+   level". Still to do there: put Crash back on his platform when following
+   ends, rather than leave him to fall.
 10. Ground that moves (Spyro's platforms and doors), and Spyro's water,
     which is not ground.

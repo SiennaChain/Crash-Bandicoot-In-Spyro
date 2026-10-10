@@ -368,6 +368,13 @@ is not Crash 3 the bridge says so and stops. Seen: 61 s from launch to the
 hub, the log showing the bridge's own steps. Crash's window happened to be
 in front for that run.
 
+**Later (Phase 1): Crash does not need any of that.** The game takes
+`-om <level>` on its command line and boots straight into the level, with
+the player on foot ten seconds after launch and no videos:
+`steam.exe -applaunch 731490 -om crash3/l300_hub/l300_hub`. See
+`docs/PHASE1.md`, "A flat world for Crash to be in". `[start] auto_load`
+is only for starting through the title screen.
+
 ## Next
 
 Phase 1: `docs/PHASE1.md`, which also holds what was learnt here about
