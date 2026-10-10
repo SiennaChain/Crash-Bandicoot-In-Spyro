@@ -23,7 +23,7 @@ constexpr uint32_t kMagic = 0x4C505343;  // "CSPL"
 constexpr uint32_t kMagicInitializing = 1;
 // Bump on any change to the layout below. A bridge refuses a block of another
 // version rather than read it wrongly.
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3;
 
 enum Side : uint32_t { kSideSpyro = 0, kSideCrash = 1, kSideCount = 2 };
 constexpr Side Other(Side s) { return s == kSideSpyro ? kSideCrash : kSideSpyro; }
@@ -167,6 +167,7 @@ struct HostState {
 // far from the camera what is drawn there is, in Unreal's units.
 enum PictureFlags : uint32_t {
   kPictureDepth = 1u << 0,  // the fourth channel does hold distances
+  kPictureView = 1u << 1,   // `camera*` and `feet` are filled in
 };
 
 struct GuestPicture {
@@ -175,7 +176,16 @@ struct GuestPicture {
   uint32_t frame;      // counts the pictures drawn
   uint32_t flags;
   float farDistance;   // a distance at or beyond this is "nothing of Crash's here"
-  uint32_t reserved;
+  float scale;         // Unreal units per Crash unit, as the distances were made
+  // The camera of Spyro's this picture was drawn through (as HostState had
+  // it), and where in Spyro's world Crash's feet were in it. A picture is
+  // a frame or two old by the time Spyro shows it; with these Spyro can put
+  // it where the camera it is showing would have seen him.
+  Vec3 cameraPosition;
+  Vec3 cameraRotation;
+  float cameraFov;
+  Vec3 feet;
+  uint32_t reserved[2];
 };
 
 // ---------------------------------------------------------------- block ----
@@ -234,6 +244,12 @@ constexpr uint32_t kGroundPagesAt = 4096;
 constexpr uint32_t kGroundPageBytes = (static_cast<uint32_t>(sizeof(GroundPage)) + kGroundMaxTriangles * 36 + 4095) & ~4095u;
 constexpr uint32_t kGroundMappingSize = kGroundPagesAt + 2 * kGroundPageBytes;
 
+// Crash's point `c` in Spyro's world (Unreal's), by a page's join.
+inline Vec3 GroundToSpyro(const GroundPage& page, const Vec3& c) {
+  return {page.spyroAnchor.x + (c.x - page.crashAnchor.x) * page.scale, page.spyroAnchor.y - (c.y - page.crashAnchor.y) * page.scale,
+          page.spyroAnchor.z + (c.z - page.crashAnchor.z) * page.scale};
+}
+
 // Spyro's point `s` (Unreal's world) in Crash's world, by a page's join.
 inline Vec3 GroundToCrash(const GroundPage& page, const Vec3& s) {
   return {page.crashAnchor.x + (s.x - page.spyroAnchor.x) / page.scale, page.crashAnchor.y - (s.y - page.spyroAnchor.y) / page.scale,
@@ -245,7 +261,7 @@ static_assert(sizeof(PeerInfo) == 16, "PeerInfo layout");
 static_assert(sizeof(Header) == 48, "Header layout");
 static_assert(sizeof(GuestState) == 304, "GuestState layout");
 static_assert(sizeof(HostState) == 80, "HostState layout");
-static_assert(sizeof(GuestPicture) == 32, "GuestPicture layout");
+static_assert(sizeof(GuestPicture) == 80, "GuestPicture layout");
 static_assert(sizeof(SharedBlock) <= kMappingSize, "block must fit the mapping");
 static_assert(sizeof(GroundHeader) == 16, "GroundHeader layout");
 static_assert(sizeof(GroundPage) == 72, "GroundPage layout");

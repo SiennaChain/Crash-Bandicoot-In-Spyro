@@ -19,6 +19,10 @@ namespace {
 SharedMapping* g_link = nullptr;
 std::atomic<bool> g_on{true};
 std::atomic<int> g_depthPick{0};
+// The view the frame being drawn has, from the game's thread.
+std::atomic_flag g_viewBusy = ATOMIC_FLAG_INIT;
+View g_view{};
+bool g_haveView = false;
 // The camera's projection, the four numbers of it that matter here.
 std::atomic<float> g_p0{0.0f}, g_p5{0.0f}, g_p10{0.0f}, g_p14{0.0f}, g_unrealPerUnit{0.5f};
 
@@ -374,6 +378,17 @@ void OnPresent(IDXGISwapChain* chain) {
   picture.height = height;
   picture.frame = ++g.frames;
   picture.flags = haveDepth ? kPictureDepth : 0;
+  picture.scale = constants.unitsOut;
+  while (g_viewBusy.test_and_set(std::memory_order_acquire)) {
+  }
+  if (g_haveView) {
+    picture.flags |= kPictureView;
+    picture.cameraPosition = g_view.cameraPosition;
+    picture.cameraRotation = g_view.cameraRotation;
+    picture.cameraFov = g_view.cameraFov;
+    picture.feet = g_view.feet;
+  }
+  g_viewBusy.clear(std::memory_order_release);
   // What the far end of the depth buffer comes out as, less a little.
   picture.farDistance = haveDepth ? p14 / (1.0f + p10) * constants.unitsOut * 0.98f : 0.0f;
   Tell(picture);
@@ -394,6 +409,14 @@ void SetCamera(const float projection[16], float unrealPerUnit) {
   g_p10.store(projection[10], std::memory_order_relaxed);
   g_p14.store(projection[14], std::memory_order_relaxed);
   g_unrealPerUnit.store(unrealPerUnit, std::memory_order_relaxed);
+}
+
+void SetView(const View* view) {
+  while (g_viewBusy.test_and_set(std::memory_order_acquire)) {
+  }
+  g_haveView = view != nullptr;
+  if (view) g_view = *view;
+  g_viewBusy.clear(std::memory_order_release);
 }
 
 void PickDepth(int which) { g_depthPick.store(which, std::memory_order_relaxed); }

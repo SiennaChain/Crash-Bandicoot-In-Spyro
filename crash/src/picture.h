@@ -16,6 +16,17 @@ bool Install(SharedMapping* link);
 // one of Crash's is worth, for the distances.
 void SetCamera(const float projection[16], float unrealPerUnit);
 
+// From the game's thread, each time its camera has been given Spyro's: the
+// camera of Spyro's it was given (as Spyro told it) and where Crash's feet
+// are in Spyro's world. Sent with the picture. Null: the camera is Crash's
+// own this frame.
+struct View {
+  Vec3 cameraPosition, cameraRotation;
+  float cameraFov;
+  Vec3 feet;
+};
+void SetView(const View* view);
+
 // [picture] send. Off: no picture is drawn and Spyro is told there is none.
 void Enable(bool on);
 

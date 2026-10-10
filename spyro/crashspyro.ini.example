@@ -80,8 +80,13 @@ hide_spyro = 1
 corner = 0
 ; The near plane Spyro's engine draws with, and how much nearer than Crash
 ; Spyro's scene must be to hide him, in Unreal's units.
-near = 10
+near = 5
 bias = 2
+; How dark the shadow under Crash is: 0 = none, 1 = black.
+shadow = 0.45
+; 1 = his picture is moved to where the camera of the frame being shown
+; would see him. 0 = drawn where Crash's game drew it, a frame or two ago.
+steady = 1
 
 [places]
 ; Where things are in the one build of the exe the mod knows (see

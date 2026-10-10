@@ -900,12 +900,14 @@ uintptr_t OnCameraUpdate(void* object, float seconds) {
   const uintptr_t system = mem::Pointer(mem::ImageBase() + p.cameraSystem);
   if (!mem::IsA(system, p.cameraSystemVtable) || mem::Pointer(system + p.systemCamera) != camera || !mem::IsA(camera, p.cameraVtable)) return result;
 
+  const uintptr_t list = mem::Pointer(mem::ImageBase() + p.actorList);
+  const uintptr_t actor = list ? mem::Pointer(list) : 0;
+  Vec3 at{};
+  const bool player = actor && mem::IsA(actor, p.actorVtable) && mem::Read(actor + p.actorPosition, at);
   if (g_cameraTest.load(std::memory_order_relaxed)) {
     // Round and round the player, looking at him: nothing to do with Spyro.
-    const uintptr_t list = mem::Pointer(mem::ImageBase() + p.actorList);
-    const uintptr_t actor = list ? mem::Pointer(list) : 0;
-    Vec3 at{};
-    if (actor && mem::IsA(actor, p.actorVtable) && mem::Read(actor + p.actorPosition, at)) {
+    picture::SetView(nullptr);
+    if (player) {
       const float turn = static_cast<float>(GetTickCount() % 8000) * (6.2831853f / 8000.0f);
       const float eye[3] = {at.x + 400.0f * std::cos(turn), at.y + 400.0f * std::sin(turn), at.z + 220.0f};
       const float ahead[3] = {at.x - eye[0], at.y - eye[1], at.z + 60.0f - eye[2]};
@@ -918,6 +920,7 @@ uintptr_t OnCameraUpdate(void* object, float seconds) {
   HostState host{};
   if (!g_viewBySpyro.load(std::memory_order_relaxed) || !g.joined || !g_link.PeerAlive() || !g_link.block()->host.Read(host) ||
       !(host.flags & kHostGround) || !(host.flags & kHostCamera)) {
+    picture::SetView(nullptr);
     return result;
   }
   // Spyro's camera, taken into Crash's world: where it is by the join, and
@@ -927,6 +930,12 @@ uintptr_t OnCameraUpdate(void* object, float seconds) {
   const float eye[3] = {eyeAt.x, eyeAt.y, eyeAt.z};
   const float ahead[3] = {std::cos(pitch) * std::cos(yaw), -std::cos(pitch) * std::sin(yaw), std::sin(pitch)};
   WriteView(camera, eye, ahead, host.cameraFov);
+  if (player) {
+    const picture::View view = {host.cameraPosition, host.cameraRotation, host.cameraFov, GroundToSpyro(g.join, at)};
+    picture::SetView(&view);
+  } else {
+    picture::SetView(nullptr);
+  }
   return result;
 }
 

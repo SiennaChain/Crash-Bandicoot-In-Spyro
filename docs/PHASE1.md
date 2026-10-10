@@ -396,6 +396,17 @@ until one of them ends it. What interrupts it does not end it:
 - **Spyro going to another level, or Crash being restarted.** Following
   lets go and takes up again by itself with a new join. Not yet seen.
 
+**Letting go of Spyro.** Seen once (2026-10-10): following ended with
+Spyro's character on the low lawn by the pool, and it flew off at about
+15,000 units a second, up and away, and did not stop; the game had to be
+restarted. Why is not known: the movement component had been switched off
+for the duration, as always, and earlier releases on other ground were
+clean. Now, on letting go, the component's speed is zeroed and its own
+`StopMovementImmediately` called before it is switched back on, and for
+three seconds afterwards the character is watched and put back where it
+was left if it gets 1,500 units away. Releases since have been clean (the
+speed read back as zero each time), but none was at that spot.
+
 When Spyro's ground does go (following ended, or Spyro gone), Crash must
 be left standing on something. If he is no lower than he was when his own
 level's ground was taken out, that ground goes back in: it is under him, or

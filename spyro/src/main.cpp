@@ -117,6 +117,7 @@ std::atomic<uint32_t> g_lastGameTick{0};  // GetTickCount() at the pawn's last t
 std::atomic<float> g_cameraYaw{0.0f};     // Spyro's camera, degrees; from the worker
 std::atomic<int> g_cue{0};             // a sound owed to the player: 1 following began, 2 it ended
 std::atomic<bool> g_groundMode{false}; // following, with Spyro's ground being sent
+std::atomic<uintptr_t> g_cameraManager{0};  // found by the worker
 std::atomic<int> g_groundDumpWanted{0};  // [debug] ground: write what would be sent to a file
 
 void LoadSettings(const Config& config) {
@@ -134,7 +135,8 @@ void LoadSettings(const Config& config) {
   g_settings.pictureShow.store(config.GetInt("picture", "show", 1));
   g_settings.pictureCorner.store(config.GetInt("picture", "corner", 0));
   g_settings.hideSpyro.store(config.GetInt("picture", "hide_spyro", 1));
-  picture::Depth(config.GetFloat("picture", "near", 10.0f), config.GetFloat("picture", "bias", 2.0f));
+  picture::Depth(config.GetFloat("picture", "near", 5.0f), config.GetFloat("picture", "bias", 2.0f));
+  picture::Looks(config.GetFloat("picture", "shadow", 0.45f), config.GetInt("picture", "steady", 1) != 0);
   g_settings.relative.store(config.GetInt("follow", "relative", 1));
   g_settings.yaw.store(config.GetFloat("follow", "yaw", 0.0f));
   g_settings.flipY.store(config.GetInt("follow", "flip_y", 1));
@@ -155,6 +157,14 @@ bool Sane(const Vec3& v) {
 bool IsObject(uintptr_t object) {
   uintptr_t vtable = 0;
   return object != 0 && mem::Read(object, vtable) && mem::InImage(vtable);
+}
+
+// Spyro's camera as it is at this moment, for the thread that shows frames.
+bool CameraNow(Vec3& position, Vec3& rotation, float& fov) {
+  const uintptr_t manager = g_cameraManager.load(std::memory_order_relaxed);
+  const Places& p = g_places;
+  return IsObject(manager) && mem::Read(manager + p.cameraLocation, position) && Sane(position) && mem::Read(manager + p.cameraRotation, rotation) &&
+         Sane(rotation) && mem::Read(manager + p.cameraFov, fov) && fov > 1.0f && fov < 179.0f;
 }
 
 bool PawnLocation(uintptr_t pawn, Vec3& out) {
@@ -206,6 +216,9 @@ struct Follow {
   bool ground = false;
   Vec3 centre{}, spyroAnchor{};
   bool hidden = false;  // Spyro's character has been hidden for Crash's sake
+  // After being let go: when (0 = not lately), and where the pawn was then.
+  DWORD letGo = 0;
+  Vec3 leftAt{};
   // K2_SetActorRotation, likewise.
   uintptr_t setRotation = 0;
   int32_t atRotation = -1, atRotationTeleport = -1;
@@ -268,15 +281,35 @@ void PublishGround(const Follow& f, const Vec3& centre, const std::vector<float>
   g_ground.Publish(page, triangles.data(), static_cast<uint32_t>(triangles.size() / 9));
 }
 
+// Has Spyro's movement stand still: whatever speed it thinks it has is
+// thrown away. Seen: let go after being carried about, the character flew
+// off at 15,000 units a second and did not stop.
+void StopMovement(const Follow& f, Vec3* was) {
+  if (!f.movement || !IsObject(f.movement)) return;
+  const int32_t at = ue::FindProperty(f.movement, "Velocity");
+  if (at >= 0) {
+    if (was) mem::Read(f.movement + at, *was);
+    const Vec3 still{};
+    std::memcpy(reinterpret_cast<void*>(f.movement + at), &still, sizeof(still));
+  }
+  Call stop;
+  if (stop.Find(f.movement, "StopMovementImmediately")) stop.On(f.movement);
+}
+
 void Release(Follow& f, uintptr_t pawn, const char* why) {
   // The component belongs to the pawn following began with. If that pawn has
   // gone (a level load), so has the component: leave it be.
+  Vec3 speed{};
+  f.letGo = 0;
   if (pawn == f.pawn) {
+    StopMovement(f, &speed);
     SetMovementTick(f, true);
     if (f.hidden) HidePawn(pawn, false);
+    // And for a while afterwards it is watched: see GameTick.
+    if (PawnLocation(pawn, f.leftAt)) f.letGo = GetTickCount() | 1;
   }
   f.hidden = false;
-  log::Info("follow: released (%s)", why);
+  log::Info("follow: released (%s); Spyro's movement thought its speed was (%.0f, %.0f, %.0f)", why, speed.x, speed.y, speed.z);
   f.active = false;
   f.ground = false;
   g_groundMode.store(false);
@@ -529,6 +562,23 @@ void GameTick(uintptr_t pawn) {
   }
   if (f.active) Place(f, pawn, guest);
 
+  // For three seconds after letting go, Spyro's character is watched. If it
+  // has been thrown (more than 1,500 units from where it was left, which
+  // nothing of the game's own does that fast) it is put back and stopped.
+  if (!f.active && f.letGo && pawn == f.pawn) {
+    Vec3 here{};
+    if (static_cast<DWORD>(now - f.letGo) > 3000) {
+      f.letGo = 0;
+    } else if (PawnLocation(pawn, here)) {
+      const float dx = here.x - f.leftAt.x, dy = here.y - f.leftAt.y, dz = here.z - f.leftAt.z;
+      if (dx * dx + dy * dy + dz * dz > 1500.0f * 1500.0f) {
+        log::Error("follow: Spyro's character was thrown %.0f units after being let go; put back where it was left", std::sqrt(dx * dx + dy * dy + dz * dz));
+        MoveTo(f, pawn, f.leftAt);
+        StopMovement(f, nullptr);
+      }
+    }
+  }
+
   // [debug] ground: what would be sent, written to a file to be looked at.
   if (g_groundDumpWanted.exchange(0)) {
     Vec3 here{};
@@ -647,6 +697,7 @@ HostState Sample() {
             mem::Read(manager + p.cameraFov, s.cameraFov) && s.cameraFov > 1.0f && s.cameraFov < 179.0f) {
           s.flags |= kHostCamera;
           g_cameraYaw.store(s.cameraRotation.y);
+          g_cameraManager.store(manager, std::memory_order_relaxed);
         }
       }
     }
@@ -783,7 +834,7 @@ DWORD WINAPI Run(void*) {
     // Steam is not up until some way into the game's start.
     if (!steam) steam = steampad::Install(&OnSteam);
     // Nor is Direct3D there to be hooked until the game has begun to draw.
-    if (!picture && s.world != 0) picture = picture::Install(&g_link);
+    if (!picture && s.world != 0) picture = picture::Install(&g_link, &CameraNow);
     steampad::DescribeAnalog(analogNow, sizeof(analogNow));
     if (std::strcmp(analogNow, analogSeen) != 0 && static_cast<DWORD>(now - lastReport) >= 5000) {
       std::strcpy(analogSeen, analogNow);

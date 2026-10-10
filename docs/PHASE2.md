@@ -106,10 +106,17 @@ Spyro's depth buffer is the first one cleared in the frame that is the back
 buffer's size (1176x664, `R24G8`; the engine clears it to 0 and its three
 2048x2048 shadow buffers to 1), and the engine made it readable, so it is
 read where it is. Unreal keeps depth the other way up: depth = near plane /
-distance. The near plane is taken as 10 (`[picture] near`): with 9 the
-soles of Crash's shoes are shaved off by the ground he stands on, with 10
-they are whole, so that is right to within a unit in ten. `[picture] bias`
-(2) is how much nearer Spyro's scene has to be to hide him.
+distance. **The near plane is 5** (`[picture] near`), not the engine's
+usual 10. `[picture] bias` (2) is how much nearer Spyro's scene has to be to
+hide him.
+
+(Corrected: this first said 10, on the strength of the soles of Crash's
+shoes being shaved by the ground at 9 and whole at 10. That test changed
+the bias from 2 to 0 at the same time, which is what shaved them. The
+shadow, below, is what showed it: worked out with 10, the ground under his
+feet came out twice as far away as his feet are, and with 5 the shadow is
+under them. So for a while Crash was being drawn in front of anything less
+than twice as far away as he was.)
 
 Spyro's own character is hidden with the engine's own
 `SetActorHiddenInGame` while following with ground is on, and shown again
@@ -127,6 +134,31 @@ his world; then run across the lawn by the bridge's controller, Spyro's
 camera following, and stopped in long grass with the blades in front of his
 shoes.
 
+## Where the camera is now, not where it was
+
+A picture of Crash's is a frame or two old by the time Spyro shows it, and
+it was drawn through the camera Spyro had then. If Spyro's camera has moved
+since, a picture drawn where it was drawn has Crash sliding against the
+world. So each picture carries the camera it was drawn through (as Spyro
+gave it) and where in Spyro's world Crash's feet were (`GuestPicture`, the
+protocol is version 3 for it), and Spyro's bridge, as it shows a frame,
+reads the engine's camera as it is at that moment, works out where Crash's
+middle would be on the frame through each of the two, and draws the picture
+moved and sized by the difference (`[picture] steady = 0` draws it where
+it was drawn). Built; with the camera still the two agree and nothing
+moves, which is all that has been seen. It wants a moving camera and a
+person to say whether he sits still in the world.
+
+## His shadow
+
+Spyro's ground knows nothing of Crash, so the bridge darkens it itself:
+before Crash is drawn, every point of Spyro's frame has its place in the
+world worked out from Spyro's depth and camera, and is darkened if it is
+within a short way of the point under Crash's feet (and not much above
+them, and not far below). It falls on whatever is under him: slopes, steps,
+and the ground far below when he jumps, fading with the drop.
+`[picture] shadow` is how dark (0.45; 0 for none).
+
 **He is big.** The scale between the worlds (0.5 of Unreal's units to one
 of Crash's) was chosen in Phase 0 so that Crash runs as fast as Spyro and
 jumps as high. At that scale his body comes out two to three times Spyro's
@@ -134,9 +166,8 @@ height: about 110 units against Spyro's 40. Halving the scale would make
 him Spyro's size and halve his run and his jump with it, unless his own
 physics were retuned. Left as it is until that is decided.
 
-Known rough edges: Crash's frame is one behind Spyro's camera when the
-camera moves fast; he is drawn over Spyro's own on-screen counters where
-they overlap; he casts no shadow on Spyro's ground.
+Known rough edges: he is drawn over Spyro's own on-screen counters where
+they overlap; Crash's own window is still there to be seen.
 
 ## The write-watch
 
@@ -158,5 +189,7 @@ on.
    left on: not yet.
 6. Decide the scale ("He is big").
 7. Behind a pillar, by hand: the phase's own test.
-8. A shadow under him; his frame and Spyro's camera in step; drawn under
-   Spyro's counters rather than over them.
+8. ~~A shadow under him; his frame and Spyro's camera in step.~~ Built:
+   "His shadow", "Where the camera is now". The second wants seeing with a
+   moving camera.
+9. Drawn under Spyro's counters rather than over them.
