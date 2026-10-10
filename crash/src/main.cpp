@@ -23,6 +23,7 @@
 #include "log.h"
 #include "memory.h"
 #include "pad.h"
+#include "picture.h"
 #include "session.h"
 #include "shm.h"
 #include "standin.h"
@@ -137,6 +138,8 @@ void LoadPlaces(const Config& config) {
   g_padOnlyInFront.store(config.GetInt("pad", "only_in_front", 1));
   g_steerBySpyro.store(config.GetInt("ground", "steer_by_spyro", 1));
   g_viewBySpyro.store(config.GetInt("view", "by_spyro", 1));
+  picture::Enable(config.GetInt("picture", "send", 1) != 0);
+  picture::PickDepth(config.GetInt("picture", "depth_pick", 0));
   g_cameraTest.store(config.GetInt("debug", "camera_test", 0));
   g_hideOwnLevel.store(config.GetInt("ground", "hide_own_level", 2));
 }
@@ -986,6 +989,7 @@ void Sample(uintptr_t client) {
 
   g_link.block()->guest.Write(s);
   g_link.Frame();
+  if (s.flags & kGuestCamera) picture::SetCamera(s.projection, g_spyroGround.joined ? g_spyroGround.join.scale : 0.5f);
   g_flags.store(s.flags);
   g_generation.store(generation);
 
@@ -1243,7 +1247,7 @@ DWORD WINAPI Run(void*) {
   std::string mesh = config.GetString("debug", "mesh"), clear = config.GetString("debug", "clear");
   std::string watchCamera = config.GetString("debug", "watch_camera");
   DWORD lastReport = GetTickCount();
-  bool steam = false;
+  bool steam = false, picture = false;
   bool arriving = config.GetInt("start", "auto_load", 0) != 0;
   if (arriving) {
     standin::Present(true);
@@ -1254,6 +1258,8 @@ DWORD WINAPI Run(void*) {
     g_link.Beat();
     // Steam is not up until some way into the game's start.
     if (!steam) steam = steampad::Install(&OnSteam);
+    // Nor is Direct3D there to be hooked until the game has begun to draw.
+    if (!picture && g_frames.load() > 30) picture = picture::Install(&g_link);
     {
       // Awake while the controller is Crash's whatever is in front: while
       // Spyro's character is following him, and when the ini says so.

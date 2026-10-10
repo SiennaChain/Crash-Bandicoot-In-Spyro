@@ -71,6 +71,18 @@ down = 3000
 ; 1 = the detailed collision of every mesh instead: many more triangles.
 complex = 0
 
+[picture]
+; 1 = while Crash is on Spyro's ground he is drawn into Spyro's picture
+; (docs/PHASE2.md), and (hide_spyro) Spyro's own character is not drawn.
+show = 1
+hide_spyro = 1
+; 1 = the whole of what arrives from Crash, small, in a corner.
+corner = 0
+; The near plane Spyro's engine draws with, and how much nearer than Crash
+; Spyro's scene must be to hide him, in Unreal's units.
+near = 10
+bias = 2
+
 [places]
 ; Where things are in the one build of the exe the mod knows (see
 ; docs/PHASE0.md). The values built in are used unless one is given here,

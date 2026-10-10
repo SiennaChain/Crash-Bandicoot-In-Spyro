@@ -52,6 +52,14 @@ hide_own_level = 2
 ; (docs/PHASE2.md). 0 = through its own.
 by_spyro = 1
 
+[picture]
+; 1 = each frame Crash's game draws is sent, with how far away each part of
+; it is, for Spyro to mix into its own (docs/PHASE2.md). 0 = none is sent.
+send = 1
+; Which of the scene-sized depth buffers the game clears in a frame holds
+; the scene, counting from 0.
+depth_pick = 0
+
 [places]
 ; Where things are in the one build of the exe the mod knows (see
 ; docs/PHASE0.md). The values built in are used unless one is given here,

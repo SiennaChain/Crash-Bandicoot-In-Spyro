@@ -33,6 +33,7 @@
 #include "log.h"
 #include "memory.h"
 #include "pad.h"
+#include "picture.h"
 #include "session.h"
 #include "shm.h"
 #include "standin.h"
@@ -93,6 +94,9 @@ struct Settings {
   std::atomic<int> ground{1};
   std::atomic<float> groundReach{6000.0f}, groundUp{3000.0f}, groundDown{3000.0f};  // [ground] reach, up, down
   std::atomic<int> groundComplex{0};  // [ground] complex: the detailed collision rather than the simple
+  std::atomic<int> pictureShow{1};    // [picture] show: Crash drawn into Spyro's picture while he is on its ground
+  std::atomic<int> pictureCorner{0};  // [picture] corner: the whole of Crash's picture, small, in a corner
+  std::atomic<int> hideSpyro{1};      // [picture] hide_spyro: Spyro's own character is not drawn while Crash is
   std::atomic<int> relative{1};   // steps are turned from Crash's camera to Spyro's
   std::atomic<float> yaw{0.0f};   // not relative: Crash's world turned this many degrees about up
   std::atomic<int> flipY{1};      // not relative: Crash's y runs the other way
@@ -127,6 +131,10 @@ void LoadSettings(const Config& config) {
   g_settings.groundUp.store(config.GetFloat("ground", "up", 3000.0f));
   g_settings.groundDown.store(config.GetFloat("ground", "down", 3000.0f));
   g_settings.groundComplex.store(config.GetInt("ground", "complex", 0));
+  g_settings.pictureShow.store(config.GetInt("picture", "show", 1));
+  g_settings.pictureCorner.store(config.GetInt("picture", "corner", 0));
+  g_settings.hideSpyro.store(config.GetInt("picture", "hide_spyro", 1));
+  picture::Depth(config.GetFloat("picture", "near", 10.0f), config.GetFloat("picture", "bias", 2.0f));
   g_settings.relative.store(config.GetInt("follow", "relative", 1));
   g_settings.yaw.store(config.GetFloat("follow", "yaw", 0.0f));
   g_settings.flipY.store(config.GetInt("follow", "flip_y", 1));
@@ -197,6 +205,7 @@ struct Follow {
   // the pawn when following began).
   bool ground = false;
   Vec3 centre{}, spyroAnchor{};
+  bool hidden = false;  // Spyro's character has been hidden for Crash's sake
   // K2_SetActorRotation, likewise.
   uintptr_t setRotation = 0;
   int32_t atRotation = -1, atRotationTeleport = -1;
@@ -204,6 +213,12 @@ struct Follow {
   uintptr_t setLocationClass = 0, setLocation = 0;
   int32_t atLocation = -1, atSweep = -1, atTeleport = -1;
 };
+
+// Spyro's character, not drawn (and drawn again): Crash is the one to see.
+void HidePawn(uintptr_t pawn, bool hidden) {
+  Call call;
+  if (IsObject(pawn) && call.Find(pawn, "SetActorHiddenInGame") && call.Set("bNewHidden", static_cast<uint8_t>(hidden))) call.On(pawn);
+}
 
 void SetMovementTick(const Follow& f, bool enabled) {
   if (!f.movement || !IsObject(f.movement)) return;
@@ -256,7 +271,11 @@ void PublishGround(const Follow& f, const Vec3& centre, const std::vector<float>
 void Release(Follow& f, uintptr_t pawn, const char* why) {
   // The component belongs to the pawn following began with. If that pawn has
   // gone (a level load), so has the component: leave it be.
-  if (pawn == f.pawn) SetMovementTick(f, true);
+  if (pawn == f.pawn) {
+    SetMovementTick(f, true);
+    if (f.hidden) HidePawn(pawn, false);
+  }
+  f.hidden = false;
   log::Info("follow: released (%s)", why);
   f.active = false;
   f.ground = false;
@@ -332,6 +351,10 @@ bool Engage(Follow& f, uintptr_t pawn, const GuestState& guest) {
   g_following.store(true);
   g_cue.store(1);
   SetMovementTick(f, false);
+  if (f.ground && g_settings.hideSpyro.load() && g_settings.pictureShow.load()) {
+    HidePawn(pawn, true);
+    f.hidden = true;
+  }
   log::Info("follow: on. Crash at (%.2f, %.2f, %.2f), pawn at (%.1f, %.1f, %.1f), movement component %s (%s)",
             f.crash0.x, f.crash0.y, f.crash0.z, f.spyro0.x, f.spyro0.y, f.spyro0.z,
             f.movement ? "held" : "not found", f.movement ? ue::NameOfObject(ue::ClassOf(f.movement)).c_str() : "");
@@ -718,13 +741,14 @@ DWORD WINAPI Run(void*) {
   const DWORD started = GetTickCount();
   bool arriving = autoContinue;
   DWORD lastPress = started;
-  bool steam = false;
+  bool steam = false, picture = false;
   char analogSeen[400] = "", analogNow[400];
   DWORD lastBeat = 0, lastReport = GetTickCount(), lastNameSearch = 0;
   for (;;) {
     Sleep(4);
     const HostState s = Sample();
     g_link.block()->host.Write(s);
+    picture::Show(g_settings.pictureShow.load() != 0 && (s.flags & kHostLinked) && (s.flags & kHostGround), g_settings.pictureCorner.load() != 0);
 
     const DWORD now = GetTickCount();
     if (arriving) {
@@ -758,6 +782,8 @@ DWORD WINAPI Run(void*) {
     }
     // Steam is not up until some way into the game's start.
     if (!steam) steam = steampad::Install(&OnSteam);
+    // Nor is Direct3D there to be hooked until the game has begun to draw.
+    if (!picture && s.world != 0) picture = picture::Install(&g_link);
     steampad::DescribeAnalog(analogNow, sizeof(analogNow));
     if (std::strcmp(analogNow, analogSeen) != 0 && static_cast<DWORD>(now - lastReport) >= 5000) {
       std::strcpy(analogSeen, analogNow);
@@ -801,7 +827,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     log::Error("this is not the build of Spyro the mod was made for. Doing nothing.");
     return TRUE;
   }
-  log::Info("Crash-in-Spyro: Spyro bridge, protocol v1");
+  log::Info("Crash-in-Spyro: Spyro bridge, protocol v%u", kVersion);
   crashlog::Install();
   CloseHandle(CreateThread(nullptr, 0, Run, nullptr, 0, nullptr));
   return TRUE;

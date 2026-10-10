@@ -23,7 +23,7 @@ constexpr uint32_t kMagic = 0x4C505343;  // "CSPL"
 constexpr uint32_t kMagicInitializing = 1;
 // Bump on any change to the layout below. A bridge refuses a block of another
 // version rather than read it wrongly.
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 
 enum Side : uint32_t { kSideSpyro = 0, kSideCrash = 1, kSideCount = 2 };
 constexpr Side Other(Side s) { return s == kSideSpyro ? kSideCrash : kSideSpyro; }
@@ -158,12 +158,33 @@ struct HostState {
   uint32_t reserved2;
 };
 
+// -------------------------------------------------------------- picture ----
+
+// Crash's picture, for Spyro to mix into its own (docs/PHASE2.md). The
+// pixels are not here: they are in a texture on the graphics card, which
+// Direct3D lets a second process open by the handle given. Red, green and
+// blue are the picture as Crash's game drew it; the fourth channel is how
+// far from the camera what is drawn there is, in Unreal's units.
+enum PictureFlags : uint32_t {
+  kPictureDepth = 1u << 0,  // the fourth channel does hold distances
+};
+
+struct GuestPicture {
+  uint64_t handle;     // 0 = there is none
+  uint32_t width, height;
+  uint32_t frame;      // counts the pictures drawn
+  uint32_t flags;
+  float farDistance;   // a distance at or beyond this is "nothing of Crash's here"
+  uint32_t reserved;
+};
+
 // ---------------------------------------------------------------- block ----
 
 struct SharedBlock {
   Header header;
-  Slot<GuestState> guest;  // written by Crash only
-  Slot<HostState> host;    // written by Spyro only
+  Slot<GuestState> guest;      // written by Crash only
+  Slot<HostState> host;        // written by Spyro only
+  Slot<GuestPicture> picture;  // written by Crash only
 };
 
 constexpr uint32_t kMappingSize = 64 * 1024;
@@ -224,6 +245,7 @@ static_assert(sizeof(PeerInfo) == 16, "PeerInfo layout");
 static_assert(sizeof(Header) == 48, "Header layout");
 static_assert(sizeof(GuestState) == 304, "GuestState layout");
 static_assert(sizeof(HostState) == 80, "HostState layout");
+static_assert(sizeof(GuestPicture) == 32, "GuestPicture layout");
 static_assert(sizeof(SharedBlock) <= kMappingSize, "block must fit the mapping");
 static_assert(sizeof(GroundHeader) == 16, "GroundHeader layout");
 static_assert(sizeof(GroundPage) == 72, "GroundPage layout");

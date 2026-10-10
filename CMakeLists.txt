@@ -30,6 +30,7 @@ if(WIN32)
   add_library(csp_common STATIC
     common/config.cpp
     common/crashlog.cpp
+    common/gfx.cpp
     common/hook.cpp
     common/log.cpp
     common/memory.cpp
@@ -38,7 +39,7 @@ if(WIN32)
     common/standin.cpp
     common/steampad.cpp
     common/watch.cpp)
-  target_link_libraries(csp_common PUBLIC csp_protocol minhook)
+  target_link_libraries(csp_common PUBLIC csp_protocol minhook d3d11 dxgi dxguid)
   target_compile_definitions(csp_common PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 
   # One bridge per game, each standing in for the XInput DLL that game loads
@@ -60,7 +61,8 @@ if(WIN32)
 
   csp_bridge(csp_crash crash xinput9_1_0)
   csp_bridge(csp_spyro spyro xinput1_3)
-  target_sources(csp_spyro PRIVATE spyro/src/ue.cpp spyro/src/ground.cpp)
+  target_sources(csp_spyro PRIVATE spyro/src/ue.cpp spyro/src/ground.cpp spyro/src/picture.cpp)
+  target_sources(csp_crash PRIVATE crash/src/picture.cpp)
 
   # The Spyro bridge reads the game's collision through PhysX 3.4's own
   # interfaces, so it needs PhysX 3.4's headers (not its libraries: the

@@ -20,8 +20,9 @@ and talk to each other; nothing of Crash is in Spyro yet. See
   was checked and how.
 - `docs/PHASE1.md`: Spyro's ground under Crash's feet. Working with nobody
   at the controller; not yet played by hand.
-- `docs/PHASE2.md`: Crash in Spyro's picture. Begun: Crash's game draws
-  through Spyro's camera.
+- `docs/PHASE2.md`: Crash in Spyro's picture. He is in it: drawn by his
+  own game through Spyro's camera and mixed in by depth. Rough edges, and
+  his size, still to settle.
 
 ## Needs
 
