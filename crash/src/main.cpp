@@ -19,6 +19,7 @@
 #include "config.h"
 #include "crashlog.h"
 #include "csp_protocol.h"
+#include "gfx.h"
 #include "hook.h"
 #include "log.h"
 #include "memory.h"
@@ -63,6 +64,7 @@ using namespace csp;
   /* the camera */                  \
   X(systemCamera, 0x10)             \
   X(cameraPosition, 0x80)           \
+  X(cameraSteer, 0xA8)              \
   X(cameraView, 0x180)              \
   X(cameraProjection, 0x1C0)        \
   X(cameraUpdate, 0x3775E0)         \
@@ -121,10 +123,16 @@ std::atomic<uint32_t> g_flags{0};
 std::atomic<uint32_t> g_generation{0};
 std::atomic<uintptr_t> g_strangeActor{0};
 std::atomic<int> g_padOnlyInFront{1};  // [pad] only_in_front
-std::atomic<int> g_steerBySpyro{1};    // [ground] steer_by_spyro
+// [ground] steer_by_spyro: 1 = the direction Crash's game steers by is
+// turned to Spyro's camera (SteerBy), 2 = the stick is turned instead
+// (SteerBySpyro), 0 = neither.
+std::atomic<int> g_steerBySpyro{1};
 // [view] by_spyro: Crash's camera is put where Spyro's is (Phase 2).
 // [debug] camera_test: it is swung round Crash instead, to see that it can be.
 std::atomic<int> g_viewBySpyro{1}, g_cameraTest{0};
+// [picture] no_wait: while Crash is on Spyro's ground his frames are shown
+// without waiting for the screen (docs/PHASE2.md, "Moving evenly").
+std::atomic<int> g_noWait{1};
 // [ground] hide_own_level: 0 nothing; 1 the level's still meshes (its ground
 // and walls); 2 every still body of the level's (crates and triggers too).
 std::atomic<int> g_hideOwnLevel{2};
@@ -139,16 +147,20 @@ void LoadPlaces(const Config& config) {
   g_steerBySpyro.store(config.GetInt("ground", "steer_by_spyro", 1));
   g_viewBySpyro.store(config.GetInt("view", "by_spyro", 1));
   picture::Enable(config.GetInt("picture", "send", 1) != 0);
+  g_noWait.store(config.GetInt("picture", "no_wait", 1));
   picture::PickDepth(config.GetInt("picture", "depth_pick", 0));
   g_cameraTest.store(config.GetInt("debug", "camera_test", 0));
   g_hideOwnLevel.store(config.GetInt("ground", "hide_own_level", 2));
 }
 
 // Crash goes where the stick points as *his* camera sees it, and nobody is
-// looking through his camera. While he stands on Spyro's ground the stick
-// is turned, before he hears it, by the angle between the two cameras, so
-// that pushing it away from the player sends him away from the player in
-// the picture the player has: Spyro's.
+// looking through his camera. The first answer to that, kept for comparing
+// with the one in use (SteerBy, below): while he stands on Spyro's ground
+// the stick is turned, before he hears it, by the angle between the two
+// cameras. It is right only when the cameras are a quarter turn apart or
+// none: the game takes the stick to the nearest of sixteen directions by
+// its own camera, so in between he goes up to twenty degrees wide of where
+// he was sent, and a quarter faster or slower as Spyro's camera turns.
 void SteerBySpyro(pad::State* state, float spyroYawDegrees) {
   const float fx = g_aheadX.load(std::memory_order_relaxed), fy = g_aheadY.load(std::memory_order_relaxed);
   if (fx == 0.0f && fy == 0.0f) return;
@@ -181,7 +193,7 @@ uint32_t OnPad(uint32_t index, uint32_t result, pad::State* state) {
   // ground: Crash waits where he is, whichever window is in front.
   const bool held = have && (host.flags & kHostGround) && !linked;
   if (!ours && (held || (!linked && g_padOnlyInFront.load(std::memory_order_relaxed) && !pad::GameInFront()))) pad::Quiet(state);
-  if (linked && (host.flags & kHostGround) && (host.flags & kHostCamera) && g_steerBySpyro.load(std::memory_order_relaxed)) {
+  if (linked && (host.flags & kHostGround) && (host.flags & kHostCamera) && g_steerBySpyro.load(std::memory_order_relaxed) == 2) {
     SteerBySpyro(state, host.cameraRotation.y);
   }
   return ours ? 0 : result;
@@ -861,6 +873,10 @@ void TendGround(uintptr_t actor, const GuestState& s) {
 
 using CameraUpdateFn = uintptr_t (*)(void* camera, float seconds);
 CameraUpdateFn g_cameraUpdate = nullptr;
+// The steps Crash's game has taken, added up, in microseconds: its own
+// clock (GuestState::gameUs). The camera is handed the length of each step,
+// and that is where it is read (OnCameraUpdate).
+std::atomic<uint32_t> g_gameUs{0};
 
 void WriteView(uintptr_t camera, const float eye[3], const float ahead[3], float horizontalFovDegrees) {
   const Places& p = g_places;
@@ -892,6 +908,40 @@ void WriteView(uintptr_t camera, const float eye[3], const float ahead[3], float
   }
 }
 
+// Which way "up" on the stick takes Crash.
+//
+// Not the way the view looks: with Spyro's view written into the camera he
+// went on being steered as before. Beside where it is and how it is turned
+// the camera keeps a second copy of both (three angles; the third is about
+// the world's up, from x towards y), and the game steers by the third angle
+// of that copy. Turned to the way Spyro's camera looks, up on the stick is
+// away from the player in the picture the player has, to the degree, and
+// everything the game does with the stick it does by the screen, as in
+// Crash's own game: it knows sixteen directions and no others (every 45
+// degrees and 30 either side of each axis), and runs him a quarter faster
+// along the diagonals.
+//
+// `about` is the angle to steer by, or null to give the game its own back.
+// The game's thread only.
+void SteerBy(uintptr_t camera, const float* about) {
+  static uintptr_t turned = 0;  // the camera whose angle is the bridge's, if any
+  static float own = 0.0f, wrote = 0.0f;
+  float* at = reinterpret_cast<float*>(camera + g_places.cameraSteer + 8);
+  float now = 0.0f;
+  if (!mem::Read(reinterpret_cast<uintptr_t>(at), now)) return;
+  if (about) {
+    // The game's own angle: what was there before the bridge's, or what
+    // the game has put there since.
+    if (turned != camera || now != wrote) own = now;
+    turned = camera;
+    wrote = *about;
+    *at = wrote;
+  } else if (turned == camera) {
+    if (now == wrote) *at = own;
+    turned = 0;
+  }
+}
+
 // On the game's thread, inside its frame, each time it has worked a camera out.
 uintptr_t OnCameraUpdate(void* object, float seconds) {
   const uintptr_t result = g_cameraUpdate(object, seconds);
@@ -900,6 +950,24 @@ uintptr_t OnCameraUpdate(void* object, float seconds) {
   const uintptr_t system = mem::Pointer(mem::ImageBase() + p.cameraSystem);
   if (!mem::IsA(system, p.cameraSystemVtable) || mem::Pointer(system + p.systemCamera) != camera || !mem::IsA(camera, p.cameraVtable)) return result;
 
+  if (seconds > 0.0f && seconds < 0.5f) g_gameUs.fetch_add(static_cast<uint32_t>(seconds * 1e6f + 0.5f), std::memory_order_relaxed);
+
+  // The way the game's own camera looks, as the game has just worked it
+  // out and before anything below writes over it. The game steers Crash by
+  // this (seen: with Spyro's view written in, he went on being steered by
+  // his own camera's direction), so it is what the stick is turned from.
+  {
+    float own[16];
+    if (mem::Read(camera + p.cameraView, own)) {
+      float aheadX = -own[2], aheadY = -own[6];
+      const float length = std::sqrt(aheadX * aheadX + aheadY * aheadY);
+      if (length > 0.25f) {
+        g_aheadX.store(aheadX / length, std::memory_order_relaxed);
+        g_aheadY.store(aheadY / length, std::memory_order_relaxed);
+      }
+    }
+  }
+
   const uintptr_t list = mem::Pointer(mem::ImageBase() + p.actorList);
   const uintptr_t actor = list ? mem::Pointer(list) : 0;
   Vec3 at{};
@@ -907,6 +975,7 @@ uintptr_t OnCameraUpdate(void* object, float seconds) {
   if (g_cameraTest.load(std::memory_order_relaxed)) {
     // Round and round the player, looking at him: nothing to do with Spyro.
     picture::SetView(nullptr);
+    SteerBy(camera, nullptr);
     if (player) {
       const float turn = static_cast<float>(GetTickCount() % 8000) * (6.2831853f / 8000.0f);
       const float eye[3] = {at.x + 400.0f * std::cos(turn), at.y + 400.0f * std::sin(turn), at.z + 220.0f};
@@ -921,6 +990,7 @@ uintptr_t OnCameraUpdate(void* object, float seconds) {
   if (!g_viewBySpyro.load(std::memory_order_relaxed) || !g.joined || !g_link.PeerAlive() || !g_link.block()->host.Read(host) ||
       !(host.flags & kHostGround) || !(host.flags & kHostCamera)) {
     picture::SetView(nullptr);
+    SteerBy(camera, nullptr);
     return result;
   }
   // Spyro's camera, taken into Crash's world: where it is by the join, and
@@ -930,6 +1000,12 @@ uintptr_t OnCameraUpdate(void* object, float seconds) {
   const float eye[3] = {eyeAt.x, eyeAt.y, eyeAt.z};
   const float ahead[3] = {std::cos(pitch) * std::cos(yaw), -std::cos(pitch) * std::sin(yaw), std::sin(pitch)};
   WriteView(camera, eye, ahead, host.cameraFov);
+  if (g_steerBySpyro.load(std::memory_order_relaxed) == 1) {
+    const float about = -yaw;  // Crash's y runs the other way
+    SteerBy(camera, &about);
+  } else {
+    SteerBy(camera, nullptr);
+  }
   if (player) {
     const picture::View view = {host.cameraPosition, host.cameraRotation, host.cameraFov, GroundToSpyro(g.join, at)};
     picture::SetView(&view);
@@ -968,6 +1044,8 @@ void Sample(uintptr_t client) {
   if ((s.flags & kGuestPlayer) && !hadPlayer) ++generation;
   hadPlayer = (s.flags & kGuestPlayer) != 0;
   s.generation = generation;
+  // Without the camera hook the steps cannot be told: the shared clock then.
+  s.gameUs = g_cameraUpdate ? g_gameUs.load(std::memory_order_relaxed) : s.timeUs;
 
   const uintptr_t system = mem::Pointer(base + p.cameraSystem);
   const uintptr_t camera = mem::IsA(system, p.cameraSystemVtable) ? mem::Pointer(system + p.systemCamera) : 0;
@@ -975,7 +1053,9 @@ void Sample(uintptr_t client) {
       mem::Read(camera + p.cameraView, s.view) && mem::Read(camera + p.cameraProjection, s.projection)) {
     s.flags |= kGuestCamera;
   }
-  {
+  if (!g_cameraUpdate) {
+    // Without the camera hook nothing has written over the game's view,
+    // and this is the camera he is steered by. With it, see OnCameraUpdate.
     float aheadX, aheadY, acrossX, acrossY;
     CameraAxes(s, aheadX, aheadY, acrossX, acrossY);
     g_aheadX.store(aheadX, std::memory_order_relaxed);
@@ -1013,6 +1093,7 @@ void Sample(uintptr_t client) {
     log::Info("havok: took %d of the bridge's %zu bodies out of the world (the rest were in worlds that are gone)", gone, had);
   }
   TendGround(actor, s);
+  gfx::NoWait(g_spyroGround.joined && g_noWait.load(std::memory_order_relaxed) != 0);
   BuryTheDead();
 }
 
@@ -1103,6 +1184,17 @@ void KeepAwake(bool wanted) {
     if (!inFront) TellWindow(false);  // back to the truth
   }
   log::Info("awake: Crash is %s", wanted ? "kept believing it is the active window" : "left to notice which window is active");
+}
+
+// [window] hide = 1: while Crash is drawn in Spyro's picture his own window
+// is not shown at all (it is not minimised, which stops the game: it is
+// simply not there to see), and comes back when he is not.
+void HideWindow(bool hidden) {
+  static bool is = false;
+  if (!g_window || hidden == is) return;
+  ShowWindow(g_window, hidden ? SW_HIDE : SW_SHOWNOACTIVATE);
+  is = hidden;
+  log::Info("window: Crash's window is %s", hidden ? "hidden" : "shown again");
 }
 
 // ------------------------------------------------------------ getting in --
@@ -1279,6 +1371,7 @@ DWORD WINAPI Run(void*) {
         standin::Present(false);
       }
       KeepAwake(linked || arriving || config.GetInt("debug", "awake", 0) != 0);
+      HideWindow(config.GetInt("window", "hide", 0) != 0 && linked && (host.flags & kHostGround));
     }
     if (config.Changed()) {
       LoadPlaces(config);

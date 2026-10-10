@@ -18,6 +18,7 @@
 //     are laid over each other rigidly.
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -89,6 +90,7 @@ struct Settings {
   std::atomic<int> follow{0};     // [follow] on: changing it switches following on or off
   std::atomic<int> key{VK_F2};    // [follow] key: so does pressing this
   std::atomic<float> scale{0.5f}; // Unreal units per Crash unit (measured: docs/PHASE0.md)
+  std::atomic<float> behind{20.0f};  // [follow] behind_ms: how far behind Crash's newest frame the pawn is kept
   // [follow] ground: Spyro's collision goes to Crash and the pawn is put
   // exactly where Crash is in it. Without it, the Phase 0 test below.
   std::atomic<int> ground{1};
@@ -127,6 +129,7 @@ void LoadSettings(const Config& config) {
   g_settings.follow.store(config.GetInt("follow", "on", 0));
   g_settings.key.store(config.GetInt("follow", "key", VK_F2));
   g_settings.scale.store(config.GetFloat("follow", "scale", 0.5f));
+  g_settings.behind.store(config.GetFloat("follow", "behind_ms", 20.0f));
   g_settings.ground.store(config.GetInt("follow", "ground", 1));
   g_settings.groundReach.store(config.GetFloat("ground", "reach", 6000.0f));
   g_settings.groundUp.store(config.GetFloat("ground", "up", 3000.0f));
@@ -136,7 +139,7 @@ void LoadSettings(const Config& config) {
   g_settings.pictureCorner.store(config.GetInt("picture", "corner", 0));
   g_settings.hideSpyro.store(config.GetInt("picture", "hide_spyro", 1));
   picture::Depth(config.GetFloat("picture", "near", 5.0f), config.GetFloat("picture", "bias", 2.0f));
-  picture::Looks(config.GetFloat("picture", "shadow", 0.45f), config.GetInt("picture", "steady", 1) != 0);
+  picture::Looks(config.GetFloat("picture", "shadow", 0.45f), config.GetInt("picture", "steady", 1) != 0, config.GetFloat("picture", "size", 0.9f));
   g_settings.relative.store(config.GetInt("follow", "relative", 1));
   g_settings.yaw.store(config.GetFloat("follow", "yaw", 0.0f));
   g_settings.flipY.store(config.GetInt("follow", "flip_y", 1));
@@ -159,12 +162,32 @@ bool IsObject(uintptr_t object) {
   return object != 0 && mem::Read(object, vtable) && mem::InImage(vtable);
 }
 
-// Spyro's camera as it is at this moment, for the thread that shows frames.
-bool CameraNow(Vec3& position, Vec3& rotation, float& fov) {
-  const uintptr_t manager = g_cameraManager.load(std::memory_order_relaxed);
-  const Places& p = g_places;
-  return IsObject(manager) && mem::Read(manager + p.cameraLocation, position) && Sane(position) && mem::Read(manager + p.cameraRotation, rotation) &&
-         Sane(rotation) && mem::Read(manager + p.cameraFov, fov) && fov > 1.0f && fov < 179.0f;
+// What the frame the engine is about to show was drawn with: noted on the
+// game's thread once a frame (GameTick), read by the thread that shows
+// frames. The game's thread is a frame ahead of what is being shown, and
+// the pawn's tick comes before the camera is moved for the new frame: at
+// that moment the camera manager still holds the camera of the frame being
+// drawn, and the pawn is still where the last tick put it.
+struct Shown {
+  Vec3 cameraPosition{}, cameraRotation{};
+  float cameraFov = 0.0f;
+  Vec3 feet{};
+  bool haveCamera = false, haveFeet = false;
+};
+std::atomic_flag g_shownBusy = ATOMIC_FLAG_INIT;
+Shown g_shown;
+
+bool CameraNow(Vec3& position, Vec3& rotation, float& fov, Vec3& feet, bool& haveFeet) {
+  while (g_shownBusy.test_and_set(std::memory_order_acquire)) {
+  }
+  const Shown shown = g_shown;
+  g_shownBusy.clear(std::memory_order_release);
+  position = shown.cameraPosition;
+  rotation = shown.cameraRotation;
+  fov = shown.cameraFov;
+  feet = shown.feet;
+  haveFeet = shown.haveFeet;
+  return shown.haveCamera;
 }
 
 bool PawnLocation(uintptr_t pawn, Vec3& out) {
@@ -216,6 +239,24 @@ struct Follow {
   bool ground = false;
   Vec3 centre{}, spyroAnchor{};
   bool hidden = false;  // Spyro's character has been hidden for Crash's sake
+  // Where Crash is taken to be at each tick of Spyro's (Place). His last
+  // few frames, each with the time on his game's own clock, and the moment
+  // on that clock that where he was over the ground, and how high, belong
+  // to (not always the frame's own: see Place); how far that clock is behind
+  // the shared one, and how fast that is changing; and Spyro's own ticks,
+  // as they came and made even.
+  struct Seen {
+    uint32_t gameUs, flatUs, riseUs;
+    Vec3 at;
+  };
+  bool tracking = false;
+  Seen seen[6]{};
+  int seenCount = 0;
+  uint32_t crashFrame = 0;
+  uint32_t lead = 0;
+  float drift = 0.0f;  // microseconds a frame of Crash's
+  uint32_t tickWall = 0, tickAt = 0;
+  float tickEvery = 16667.0f;
   // After being let go: when (0 = not lately), and where the pawn was then.
   DWORD letGo = 0;
   Vec3 leftAt{};
@@ -349,6 +390,7 @@ bool Engage(Follow& f, uintptr_t pawn, const GuestState& guest) {
     get.Get("ReturnValue", f.movement);
   }
   f.pawn = pawn;
+  f.tracking = false;
   f.generation = guest.generation;
   f.crash0 = guest.position;
   f.crashLast = guest.position;
@@ -420,8 +462,131 @@ void Place(Follow& f, uintptr_t pawn, const GuestState& guest) {
   if (f.ground) {
     // The two worlds laid over each other as the ground's join has them:
     // Crash's y runs the other way, and that is all.
-    const Vec3 to = {f.spyro0.x + scale * (guest.position.x - f.crash0.x), f.spyro0.y - scale * (guest.position.y - f.crash0.y),
-                     f.spyro0.z + scale * (guest.position.z - f.crash0.z)};
+    //
+    // Where he is at this tick is not where his newest frame has him. His
+    // frames and Spyro's are both sixty a second and not in step, and
+    // neither comes evenly: his game makes up a late frame's time in the
+    // next one's step (GuestState::gameUs), and Spyro's ticks come 18, 18
+    // and 14 thousandths of a second apart though its pictures are shown
+    // evenly. Put where each frame of his had him, the pawn moves in fits
+    // and starts, Spyro's camera after it, and that is what the player sees
+    // as him juddering. So both clocks are made even first, and he is put
+    // where his own frames, by his own clock, say he was a moment ago
+    // ([follow] behind_ms: far enough back that there is nearly always a
+    // frame of his on either side to go between).
+    const uint32_t wall = NowUs();
+    if (!f.tracking) {
+      f.tracking = true;
+      f.seenCount = 0;
+      f.tickAt = wall;
+      f.tickEvery = 16667.0f;
+    } else {
+      // Spyro's ticks: as far apart as they are on the whole, and pulled a
+      // little towards when each really came.
+      const float came = static_cast<float>(ElapsedUs(f.tickWall, wall));
+      f.tickEvery += 0.02f * (std::fmin(std::fmax(came, f.tickEvery * 0.5f), f.tickEvery * 2.0f) - f.tickEvery);
+      f.tickAt += static_cast<uint32_t>(std::lround(f.tickEvery));
+      const int32_t late = ElapsedUs(f.tickAt, wall);
+      if (late > 12000 || late < -12000) {
+        f.tickAt = wall;  // a frame was dropped, or they are not coming evenly at all
+      } else {
+        f.tickAt += static_cast<uint32_t>(std::lround(0.05f * static_cast<float>(late)));
+      }
+    }
+    f.tickWall = wall;
+
+    if (guest.frame != f.crashFrame || f.seenCount == 0) {
+      f.crashFrame = guest.frame;
+      const uint32_t lead = guest.timeUs - guest.gameUs;
+      Follow::Seen* last = f.seenCount ? &f.seen[f.seenCount - 1] : nullptr;
+      const int32_t step = last ? ElapsedUs(last->gameUs, guest.gameUs) : 0;
+      const float dx = last ? guest.position.x - last->at.x : 0.0f, dy = last ? guest.position.y - last->at.y : 0.0f,
+                  dz = last ? guest.position.z - last->at.z : 0.0f;
+      if (!last || step <= 0 || step > 250000 || dx * dx + dy * dy + dz * dz > 150.0f * 150.0f) {
+        // His first frame, or his clock is stopped (his game is paused), or
+        // stopped for a while, or he has been put somewhere else: nothing
+        // before this frame says anything about now.
+        f.seen[0] = {guest.gameUs, guest.gameUs, guest.gameUs, guest.position};
+        f.seenCount = 1;
+        f.lead = lead;
+        f.drift = 0.0f;
+      } else {
+        // When this frame's place belongs to. Its own time, nearly always.
+        // But after a late frame his game takes a double step, and not
+        // everything of his takes it at once: running, he goes twice as far
+        // in that frame; in the air, he rises or falls a single step in it
+        // and the double in the frame after. So what moved a single step in
+        // a long frame is put one usual step after the frame before, and
+        // which it was is told by which leaves him moving more as he was.
+        // (Over the ground and up and down are told apart, each for itself.)
+        int32_t usual = step;
+        for (int i = 1; i < f.seenCount; ++i) usual = std::min(usual, ElapsedUs(f.seen[i - 1].gameUs, f.seen[i].gameUs));
+        uint32_t flatUs = guest.gameUs, riseUs = guest.gameUs;
+        if (step - usual > 2000 && f.seenCount >= 2) {
+          const Follow::Seen& before = f.seen[f.seenCount - 2];
+          const uint32_t early = last->gameUs + static_cast<uint32_t>(usual);
+          const float flatBefore = static_cast<float>(ElapsedUs(before.flatUs, last->flatUs)), riseBefore = static_cast<float>(ElapsedUs(before.riseUs, last->riseUs));
+          const float flatLate = static_cast<float>(ElapsedUs(last->flatUs, guest.gameUs)), flatEarly = static_cast<float>(ElapsedUs(last->flatUs, early));
+          const float riseLate = static_cast<float>(ElapsedUs(last->riseUs, guest.gameUs)), riseEarly = static_cast<float>(ElapsedUs(last->riseUs, early));
+          if (flatBefore > 0.0f && flatEarly > 0.0f && flatLate > 0.0f) {
+            const float wasX = (last->at.x - before.at.x) / flatBefore, wasY = (last->at.y - before.at.y) / flatBefore;
+            const auto off = [&](float over) { return std::hypot(dx / over - wasX, dy / over - wasY); };
+            if (off(flatEarly) < off(flatLate)) flatUs = early;
+          }
+          if (riseBefore > 0.0f && riseEarly > 0.0f && riseLate > 0.0f) {
+            const float was = (last->at.z - before.at.z) / riseBefore;
+            if (std::fabs(dz / riseEarly - was) < std::fabs(dz / riseLate - was)) riseUs = early;
+          }
+        }
+        const int most = static_cast<int>(sizeof(f.seen) / sizeof(f.seen[0]));
+        if (f.seenCount == most) {
+          for (int i = 1; i < most; ++i) f.seen[i - 1] = f.seen[i];
+          --f.seenCount;
+        }
+        f.seen[f.seenCount++] = {guest.gameUs, flatUs, riseUs, guest.position};
+        // How far his clock is behind the shared one: followed slowly, since
+        // any one frame of his may be ten thousandths of a second late.
+        const float error = static_cast<float>(static_cast<int32_t>(lead - f.lead));
+        if (std::fabs(error) > 60000.0f) {
+          f.lead = lead;
+          f.drift = 0.0f;
+        } else {
+          f.drift += 0.0001f * error;
+          f.lead += static_cast<uint32_t>(std::lround(0.02f * error + f.drift));
+        }
+      }
+    }
+
+    // The moment wanted, on his clock, and where his frames have him then:
+    // between the two of them either side of it, or, later than his newest
+    // (it is late), carried on as he was going for a little while and no
+    // further.
+    const float behind = std::fmin(std::fmax(g_settings.behind.load(), 0.0f), 60.0f);
+    const uint32_t wanted = f.tickAt - f.lead - static_cast<uint32_t>(behind * 1000.0f);
+    struct Span {
+      int from, to;
+      float along;
+    };
+    const auto span = [&](uint32_t Follow::Seen::*when) -> Span {
+      const int newest = f.seenCount - 1;
+      if (newest < 1) return {0, 0, 0.0f};
+      const int32_t past = ElapsedUs(f.seen[newest].*when, wanted);
+      if (past >= 0) {
+        const float step = static_cast<float>(ElapsedUs(f.seen[newest - 1].*when, f.seen[newest].*when));
+        return {newest - 1, newest, 1.0f + static_cast<float>(past > 30000 ? 30000 : past) / std::fmax(step, 1000.0f)};
+      }
+      for (int i = newest; i > 0; --i) {
+        const int32_t into = ElapsedUs(f.seen[i - 1].*when, wanted);
+        if (into < 0) continue;
+        return {i - 1, i, static_cast<float>(into) / std::fmax(static_cast<float>(ElapsedUs(f.seen[i - 1].*when, f.seen[i].*when)), 1000.0f)};
+      }
+      return {0, 0, 0.0f};
+    };
+    const Span flat = span(&Follow::Seen::flatUs), rise = span(&Follow::Seen::riseUs);
+    const auto along = [](float a, float b, float t) { return a + (b - a) * t; };
+    const Vec3 crash = {along(f.seen[flat.from].at.x, f.seen[flat.to].at.x, flat.along), along(f.seen[flat.from].at.y, f.seen[flat.to].at.y, flat.along),
+                        along(f.seen[rise.from].at.z, f.seen[rise.to].at.z, rise.along)};
+    const Vec3 to = {f.spyro0.x + scale * (crash.x - f.crash0.x), f.spyro0.y - scale * (crash.y - f.crash0.y), f.spyro0.z + scale * (crash.z - f.crash0.z)};
     const float stepX = to.x - f.target.x, stepY = to.y - f.target.y;
     f.target = to;
     MoveTo(f, pawn, to);
@@ -491,6 +656,23 @@ void GameTick(uintptr_t pawn) {
   g_link.Frame();
 
   static Follow f;
+  {
+    // For the thread that shows frames: see Shown.
+    Shown shown;
+    const uintptr_t manager = g_cameraManager.load(std::memory_order_relaxed);
+    const Places& p = g_places;
+    shown.haveCamera = IsObject(manager) && mem::Read(manager + p.cameraLocation, shown.cameraPosition) && Sane(shown.cameraPosition) &&
+                       mem::Read(manager + p.cameraRotation, shown.cameraRotation) && Sane(shown.cameraRotation) &&
+                       mem::Read(manager + p.cameraFov, shown.cameraFov) && shown.cameraFov > 1.0f && shown.cameraFov < 179.0f;
+    if (f.active && f.ground && pawn == f.pawn) {
+      shown.feet = {f.target.x, f.target.y, f.target.z - (f.spyro0.z - f.spyroAnchor.z)};
+      shown.haveFeet = true;
+    }
+    while (g_shownBusy.test_and_set(std::memory_order_acquire)) {
+    }
+    g_shown = shown;
+    g_shownBusy.clear(std::memory_order_release);
+  }
   static bool wasDown = false;
   static int lastSetting = 0;
   static bool complained = false;

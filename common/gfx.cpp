@@ -29,9 +29,16 @@ ClearDepthReal g_clearDepth = nullptr;
 PresentFn g_onPresent = nullptr;
 ClearDepthFn g_onClearDepth = nullptr;
 
+std::atomic<bool> g_noWait{false};
+
 HRESULT STDMETHODCALLTYPE OnPresent(IDXGISwapChain* chain, UINT interval, UINT flags) {
+  static bool told = false;
+  if (!told && !(flags & DXGI_PRESENT_TEST)) {
+    told = true;
+    log::Info("Direct3D: the game shows its frames with interval %u, flags 0x%X", interval, flags);
+  }
   if (g_onPresent && !(flags & DXGI_PRESENT_TEST)) g_onPresent(chain);
-  return g_present(chain, interval, flags);
+  return g_present(chain, g_noWait.load(std::memory_order_relaxed) ? 0 : interval, flags);
 }
 
 void STDMETHODCALLTYPE OnClearDepth(ID3D11DeviceContext* context, ID3D11DepthStencilView* view, UINT flags, FLOAT depth, UINT8 stencil) {
@@ -40,6 +47,8 @@ void STDMETHODCALLTYPE OnClearDepth(ID3D11DeviceContext* context, ID3D11DepthSte
 }
 
 }  // namespace
+
+void NoWait(bool on) { g_noWait.store(on, std::memory_order_relaxed); }
 
 bool Install(PresentFn onPresent, ClearDepthFn onClearDepth) {
   static bool installed = false;

@@ -21,7 +21,8 @@ status_seconds = 10
 ;   camera_test = 1            the camera swings round Crash (0 stops it)
 ;   watch_camera = 0x180 4 #1  logs what code writes there in the camera
 ;                              object over the next three seconds
-; and press = LS_UP 400 #1 has the bridge hold the stick or a button itself.
+; and press = LS_UP 400 #1 has the bridge hold the stick or a button itself
+; (LS:0.5,-0.87 for a stick held anywhere: across, then up, each -1 to 1).
 
 [start]
 ; 1 = go from the title screen to the Crash 3 hub with the save in use, with
@@ -38,9 +39,11 @@ auto_load = 0
 only_in_front = 1
 
 [ground]
-; While Spyro sends its ground (docs/PHASE1.md):
-; 1 = the stick is turned from Crash's camera to Spyro's before Crash hears
-; it, so he goes where the player, looking at Spyro's picture, points.
+; While Spyro sends its ground, which way "up" on the stick takes Crash:
+; 1 = away from the player in Spyro's picture: the direction Crash's game
+; steers by is turned to Spyro's camera (docs/PHASE2.md, "Steering by
+; Spyro's camera"). 2 = the same aim by turning the stick, which is only
+; right at some angles; kept to compare. 0 = as Crash's own camera has it.
 steer_by_spyro = 1
 ; What of Crash's own level is taken out of his physics meanwhile, and put
 ; back afterwards: 2 = everything of it that stands still (ground, walls,
@@ -59,6 +62,16 @@ send = 1
 ; Which of the scene-sized depth buffers the game clears in a frame holds
 ; the scene, counting from 0.
 depth_pick = 0
+; 1 = while Crash is on Spyro's ground his frames are shown as they come,
+; without waiting for the screen: waiting makes about every fourteenth late,
+; and Spyro's character stumbles with it (docs/PHASE2.md, "Moving evenly").
+; 0 = as the game asks.
+no_wait = 1
+
+[window]
+; 1 = while Crash is drawn in Spyro's picture his own window is hidden, and
+; comes back when he is not. 0 = it stays where it is.
+hide = 0
 
 [places]
 ; Where things are in the one build of the exe the mod knows (see

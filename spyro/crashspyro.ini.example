@@ -47,6 +47,11 @@ ground = 1
 ; Unreal units moved per Crash unit moved. 0.5 is measured: at that, Crash
 ; runs as fast as Spyro and his jump is as high as Spyro's.
 scale = 0.5
+; With ground: Spyro's character is put where Crash was this many
+; thousandths of a second ago, between two of his frames, which is what
+; makes it move evenly (docs/PHASE2.md, "Moving evenly"). Less answers the
+; stick sooner and stumbles when a frame of his is late; 30 never stumbles.
+behind_ms = 20
 ; The rest is for ground = 0.
 ; 1 = each step Crash takes is turned from his camera to Spyro's, so "away
 ; from the player" is away from the player in both games wherever the
@@ -87,6 +92,11 @@ shadow = 0.45
 ; 1 = his picture is moved to where the camera of the frame being shown
 ; would see him. 0 = drawn where Crash's game drew it, a frame or two ago.
 steady = 1
+; How big he is drawn, about his feet: 1 = as Crash's game drew him, 0.5 =
+; half. Only how he looks: his run, his jump and what stops him are as they
+; were (docs/PHASE2.md, "He is big"). At 0.9 he comes up to just below
+; Hunter's shoulder.
+size = 0.9
 
 [places]
 ; Where things are in the one build of the exe the mod knows (see

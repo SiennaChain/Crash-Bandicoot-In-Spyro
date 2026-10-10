@@ -6,8 +6,10 @@
 
 namespace csp::picture {
 
-// What Spyro's camera is at this moment; false if it cannot be told.
-using CameraFn = bool (*)(Vec3& position, Vec3& rotation, float& fov);
+// The camera the frame about to be shown was drawn through, and where the
+// pawn's feet were in that frame (`haveFeet` false if it is not following).
+// False if the camera cannot be told.
+using CameraFn = bool (*)(Vec3& position, Vec3& rotation, float& fov, Vec3& feet, bool& haveFeet);
 
 // From the bridge's own thread, now and then, until it says true. `camera`
 // is asked from the thread that shows frames.
@@ -23,9 +25,12 @@ void Show(bool crash, bool corner);
 // be before he is hidden by it, both in Unreal's units.
 void Depth(float nearPlane, float bias);
 
-// [picture] shadow, steady: how dark the shadow under Crash is (0 = none,
-// 1 = black), and whether his picture is moved to where the camera of the
-// frame being shown would see him rather than drawn where it was drawn.
-void Looks(float shadow, bool steady);
+// [picture] shadow, steady, size: how dark the shadow under Crash is (0 =
+// none, 1 = black); whether his picture is moved to where the camera of the
+// frame being shown would see him rather than drawn where it was drawn; and
+// how big he is drawn, about his feet (1 = as Crash's game drew him). Size
+// changes only how he looks: how fast he runs, how high he jumps and what
+// stops him stay as they are.
+void Looks(float shadow, bool steady, float size);
 
 }  // namespace csp::picture

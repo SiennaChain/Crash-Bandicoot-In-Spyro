@@ -371,13 +371,13 @@ ground is being sent (`kHostGround`):
   that move (many triggers are among them) are left alone so far.
 
 **Steering.** Crash goes where the stick points as *his* camera sees it,
-and nobody is looking through his camera. Rather than move his camera, the
-bridge turns the stick before he hears it, by the angle between his
-camera's line of sight and Spyro's (Spyro's taken into Crash's world by the
-same mirror). Pushing the stick away from the player then sends him away
-from the player in the picture the player has. `[ground] steer_by_spyro =
-0` turns it off. (Writing Spyro's view into Crash's camera is still wanted
-for Phase 2, which draws from it.)
+and nobody is looking through his camera. This phase's answer was to turn
+the stick before he hears it, by the angle between his camera's line of
+sight and Spyro's. It was not good enough (his game takes the stick to the
+nearest of sixteen directions by its own camera), and Phase 2 replaced it:
+the direction his game steers by is turned to Spyro's camera instead
+(`docs/PHASE2.md`, "Steering by Spyro's camera"). `[ground] steer_by_spyro`
+is 1 for that, 2 for the turned stick, 0 for neither.
 
 ## Following, once it is on
 

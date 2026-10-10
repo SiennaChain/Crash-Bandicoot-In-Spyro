@@ -23,7 +23,7 @@ constexpr uint32_t kMagic = 0x4C505343;  // "CSPL"
 constexpr uint32_t kMagicInitializing = 1;
 // Bump on any change to the layout below. A bridge refuses a block of another
 // version rather than read it wrongly.
-constexpr uint32_t kVersion = 3;
+constexpr uint32_t kVersion = 4;
 
 enum Side : uint32_t { kSideSpyro = 0, kSideCrash = 1, kSideCount = 2 };
 constexpr Side Other(Side s) { return s == kSideSpyro ? kSideCrash : kSideSpyro; }
@@ -115,7 +115,14 @@ struct GuestState {
   // what a level load looks like from here. A position from one generation
   // says nothing about where the player is in the next.
   uint32_t generation;
-  uint32_t reserved;
+  // Crash's game's own clock, in microseconds: the steps its frames have
+  // taken, added up. He moves by this clock, not by `timeUs`: his game takes
+  // a step the length of the frame before, so a frame that comes late is a
+  // short step late and the one after it a long step on time, and against
+  // `timeUs` he seems to stall and lurch about once in fourteen frames.
+  // Against this he moves evenly. It keeps the same pace as `timeUs` and
+  // wanders a few milliseconds either side of it.
+  uint32_t gameUs;
   Vec3 position;        // the player actor's own position
   float model[16];      // the matrix the game drew the player's model with
   Vec3 cameraPosition;

@@ -16,8 +16,10 @@ namespace csp::standin {
 void Present(bool on);
 
 // Holds `what` for `ms`, then lets go, without waiting for it. `what` is one
-// or more of UP DOWN LEFT RIGHT START BACK LB RB A B X Y LS_UP LS_DOWN
-// LS_LEFT LS_RIGHT joined by '+'. False if it is not understood.
+// or more of UP DOWN LEFT RIGHT START BACK LB RB A B X Y, LS_UP LS_DOWN
+// LS_LEFT LS_RIGHT and RS_ the same for a stick pushed right over, and
+// LS:x,y or RS:x,y for one held anywhere (each from -1 to 1, right and up),
+// joined by '+'. False if it is not understood.
 bool Hold(const std::string& what, uint32_t ms);
 
 // For a bridge's pad filter. If the stand-in is in use on this controller

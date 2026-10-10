@@ -22,6 +22,7 @@ CameraFn g_camera = nullptr;
 std::atomic<bool> g_crash{false}, g_corner{false};
 std::atomic<float> g_nearPlane{5.0f}, g_bias{2.0f}, g_shadow{0.45f};
 std::atomic<int> g_steady{1};
+std::atomic<float> g_size{1.0f};
 
 // Crash's picture over Spyro's: wherever it says something of Crash's is
 // (a distance short of "nothing here") and that is nearer than what Spyro
@@ -357,33 +358,49 @@ void OnPresent(IDXGISwapChain* chain) {
   for (int i = 0; i < g_clearedCount; ++i) g_cleared[i].texture.Reset();
   g_clearedCount = 0;
 
-  // The camera this frame of Spyro's was drawn through, as near as can be
-  // told: the engine's, read now. The game is at most a frame ahead of what
-  // is being shown and moves its camera late in its frame.
+  // The camera this frame of Spyro's was drawn through and where its pawn
+  // was in it, as the game's thread noted them (main.cpp, GameTick).
   const float width = static_cast<float>(desc.Width), height = static_cast<float>(desc.Height), shape = width / height;
   const float nearPlane = g_nearPlane.load(std::memory_order_relaxed), bias = g_bias.load(std::memory_order_relaxed);
   PictureConstants constants{picture.farDistance, (picture.flags & kPictureDepth) ? 1.0f : 0.0f, 0.0f, haveScene ? 1.0f : 0.0f,
                              {scenePart[0], scenePart[1]}, nearPlane, bias, {0.0f, 0.0f, 1.0f, 1.0f}, 1.0f, {}};
-  Vec3 nowPosition{}, nowRotation{};
+  Vec3 nowPosition{}, nowRotation{}, nowFeet{};
   float nowFov = 0.0f;
-  const bool haveView = crash && (picture.flags & kPictureView) && g_camera && g_camera(nowPosition, nowRotation, nowFov);
+  bool haveFeet = false;
+  const bool haveView = crash && (picture.flags & kPictureView) && g_camera && g_camera(nowPosition, nowRotation, nowFov, nowFeet, haveFeet);
+  // Where he is drawn: where Spyro's own character would be in this frame.
+  // That is what Spyro's camera is following, so he sits as still on the
+  // screen as Spyro would. (Failing that, where his own picture had him.)
+  const Vec3 standing = haveFeet ? nowFeet : picture.feet;
   Eye now{};
   if (haveView) {
     now = MakeEye(nowPosition, nowRotation, nowFov);
-    if (g_steady.load(std::memory_order_relaxed)) {
-      // His middle, as the picture's camera saw it and as this frame's does.
-      const Eye then = MakeEye(picture.cameraPosition, picture.cameraRotation, picture.cameraFov);
-      const float middle[3] = {picture.feet.x, picture.feet.y, picture.feet.z + 100.0f * picture.scale};
-      float thenX, thenY, thenAhead, nowX, nowY, nowAhead;
-      if (Project(then, middle, shape, thenX, thenY, thenAhead) && Project(now, middle, shape, nowX, nowY, nowAhead)) {
-        const float bigger = thenAhead / nowAhead;  // nearer now: drawn bigger
-        if (bigger > 0.5f && bigger < 2.0f && std::fabs(nowX - thenX) < 0.6f && std::fabs(nowY - thenY) < 0.6f) {
-          constants.warp[0] = thenX - nowX / bigger;
-          constants.warp[1] = thenY - nowY / bigger;
-          constants.warp[2] = constants.warp[3] = 1.0f / bigger;
-          constants.distanceScale = 1.0f / bigger;
-        }
+    // His feet, as the picture's camera saw them and as this frame's does
+    // (the same, if the picture is to be drawn where it was drawn). The
+    // picture is moved to put the one on the other, sized for the camera
+    // having come nearer or gone further, and then by `size` about his
+    // feet, so that he stays standing where he stands.
+    const Eye then = MakeEye(picture.cameraPosition, picture.cameraRotation, picture.cameraFov);
+    const float feet[3] = {picture.feet.x, picture.feet.y, picture.feet.z};
+    const float size = g_size.load(std::memory_order_relaxed);
+    float thenX, thenY, thenAhead, nowX, nowY, nowAhead;
+    if (Project(then, feet, shape, thenX, thenY, thenAhead)) {
+      nowX = thenX;
+      nowY = thenY;
+      nowAhead = thenAhead;
+      const float standingAt[3] = {standing.x, standing.y, standing.z};
+      const bool steady = g_steady.load(std::memory_order_relaxed) && Project(now, standingAt, shape, nowX, nowY, nowAhead) &&
+                          thenAhead / nowAhead > 0.5f && thenAhead / nowAhead < 2.0f && std::fabs(nowX - thenX) < 0.6f && std::fabs(nowY - thenY) < 0.6f;
+      if (!steady) {
+        nowX = thenX;
+        nowY = thenY;
+        nowAhead = thenAhead;
       }
+      const float bigger = thenAhead / nowAhead * (size > 0.05f ? size : 1.0f);  // nearer now, or asked for: drawn bigger
+      constants.warp[0] = thenX - nowX / bigger;
+      constants.warp[1] = thenY - nowY / bigger;
+      constants.warp[2] = constants.warp[3] = 1.0f / bigger;
+      constants.distanceScale = nowAhead / thenAhead;
     }
   }
 
@@ -416,10 +433,10 @@ void OnPresent(IDXGISwapChain* chain) {
       shadow.tanAcross = now.tanAcross;
       shadow.tanUp = now.tanAcross / shape;
       shadow.nearPlane = nearPlane;
-      shadow.radius = 55.0f * picture.scale;
-      shadow.feet[0] = picture.feet.x;
-      shadow.feet[1] = picture.feet.y;
-      shadow.feet[2] = picture.feet.z;
+      shadow.radius = 55.0f * picture.scale * (g_size.load(std::memory_order_relaxed) > 0.05f ? g_size.load(std::memory_order_relaxed) : 1.0f);
+      shadow.feet[0] = standing.x;
+      shadow.feet[1] = standing.y;
+      shadow.feet[2] = standing.z;
       shadow.strength = strength;
       shadow.scenePart[0] = scenePart[0];
       shadow.scenePart[1] = scenePart[1];
@@ -471,9 +488,10 @@ void Depth(float nearPlane, float bias) {
   g_bias.store(bias, std::memory_order_relaxed);
 }
 
-void Looks(float shadow, bool steady) {
+void Looks(float shadow, bool steady, float size) {
   g_shadow.store(shadow, std::memory_order_relaxed);
   g_steady.store(steady ? 1 : 0, std::memory_order_relaxed);
+  g_size.store(size, std::memory_order_relaxed);
 }
 
 }  // namespace csp::picture

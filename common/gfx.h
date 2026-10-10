@@ -18,6 +18,11 @@ using ClearDepthFn = void (*)(ID3D11DeviceContext* context, ID3D11DepthStencilVi
 // later); true once the hooks are in. `onClearDepth` may be null.
 bool Install(PresentFn onPresent, ClearDepthFn onClearDepth);
 
+// While on, the game's frames are shown as they come, without waiting for
+// the screen's next refresh as the game asked. For a game whose own window
+// nobody is looking at.
+void NoWait(bool on);
+
 // Compiles a shader; null (and a line in the log) if it will not.
 ID3DBlob* Compile(const char* source, const char* entry, const char* target);
 

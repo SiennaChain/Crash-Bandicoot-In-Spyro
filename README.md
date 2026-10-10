@@ -11,18 +11,24 @@ drawn into Spyro's picture. The idea is
 [SkyCraft](https://github.com/chasmlol/SkyCraft)'s, and this is a sibling of
 [Battlefront II in World at War zombies](https://github.com/SiennaChain/WaW-Zombies-with-SWBF2).
 
-**Status: nothing playable yet.** The two games start with their bridges in
-and talk to each other; nothing of Crash is in Spyro yet. See
-`docs/PHASE0.md`.
+**Status: he can be walked about, and that is all.** With both games
+running, Crash stands, runs and jumps on Spyro's ground in Sunrise Spring,
+drawn into Spyro's window by his own game, hidden by Spyro's scenery where
+it is nearer, with a shadow, steered by Spyro's camera. Nothing in Spyro's
+world knows he is there yet: no fighting, no gems, no water, no changing
+level (phases 3 to 6 of `docs/DESIGN.md`).
+
+Work stopped here on 2026-10-10, after phase 2, while the other way of
+doing it is tried somewhere else: Crash as a character inside Spyro's own
+game, without Crash's game running. This repository is left as it stands.
 
 - `docs/DESIGN.md`: the plan, who owns what, and the phases.
 - `docs/PHASE0.md`: the link between the two games. Done: what exists, what
   was checked and how.
-- `docs/PHASE1.md`: Spyro's ground under Crash's feet. Working with nobody
-  at the controller; not yet played by hand.
-- `docs/PHASE2.md`: Crash in Spyro's picture. He is in it: drawn by his
-  own game through Spyro's camera and mixed in by depth. Rough edges, and
-  his size, still to settle.
+- `docs/PHASE1.md`: Spyro's ground under Crash's feet. Done.
+- `docs/PHASE2.md`: Crash in Spyro's picture. He is in it, moves evenly
+  and goes where the stick points on the screen. Not done: seen behind
+  something as big as a pillar, and drawn under Spyro's counters.
 
 ## Needs
 
@@ -35,8 +41,13 @@ other (`CMakeLists.txt`).
 
 ```powershell
 tools\build.ps1
-tools\install.ps1
+tools\run.ps1 -Install
 ```
+
+`run.ps1` closes both games if they are running, puts the bridges in, and
+starts both, Crash straight into the level he stands in. Then F2 in Spyro
+puts Crash there. (`tools\install.ps1` only puts the bridges in, or with
+`-Uninstall` takes them out.)
 
 ## Layout
 
