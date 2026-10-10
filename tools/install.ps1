@@ -70,7 +70,7 @@ foreach ($game in $games) {
   }
 
   if ($Uninstall) {
-    foreach ($file in $dll, $ini, (Join-Path $game.Folder "crashspyro_$($game.Source).log")) {
+    foreach ($file in $dll, $ini, (Join-Path $game.Folder "crashspyro_$($game.Source).log"), (Join-Path $game.Folder 'crashspyro_ground.bin')) {
       if ((Test-Path $file) -and $PSCmdlet.ShouldProcess($file, 'remove')) { [IO.File]::Delete($file) }
     }
     if (-not $WhatIfPreference) { Write-Host "$($game.Name): removed from $($game.Folder)" }

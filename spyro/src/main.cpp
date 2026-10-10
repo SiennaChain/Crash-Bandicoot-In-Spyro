@@ -11,17 +11,24 @@
 //     frame, until the key is pressed again;
 //   - optionally, pressing the controller's A for the player from the title
 //     screen until the game is in a level, so a restart needs no hands.
+//
+// Phase 1 (docs/PHASE1.md):
+//   - while following, Spyro's collision around the pawn is read out of the
+//     engine's physics and sent to Crash to stand on, and the two worlds
+//     are laid over each other rigidly.
 #include <windows.h>
 
 #include <atomic>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "clock.h"
 #include "config.h"
 #include "crashlog.h"
 #include "csp_protocol.h"
+#include "ground.h"
 #include "hook.h"
 #include "log.h"
 #include "memory.h"
@@ -74,12 +81,18 @@ HMODULE g_module = nullptr;
 std::wstring g_dir;
 Places g_places;
 SharedMapping g_link;
+GroundMapping g_ground;
 
 // From crashspyro.ini, read by the worker and used on the game's thread.
 struct Settings {
   std::atomic<int> follow{0};     // [follow] on: changing it switches following on or off
   std::atomic<int> key{VK_F2};    // [follow] key: so does pressing this
   std::atomic<float> scale{0.5f}; // Unreal units per Crash unit (measured: docs/PHASE0.md)
+  // [follow] ground: Spyro's collision goes to Crash and the pawn is put
+  // exactly where Crash is in it. Without it, the Phase 0 test below.
+  std::atomic<int> ground{1};
+  std::atomic<float> groundReach{6000.0f}, groundUp{3000.0f}, groundDown{3000.0f};  // [ground] reach, up, down
+  std::atomic<int> groundComplex{0};  // [ground] complex: the detailed collision rather than the simple
   std::atomic<int> relative{1};   // steps are turned from Crash's camera to Spyro's
   std::atomic<float> yaw{0.0f};   // not relative: Crash's world turned this many degrees about up
   std::atomic<int> flipY{1};      // not relative: Crash's y runs the other way
@@ -99,6 +112,8 @@ std::atomic<bool> g_following{false};
 std::atomic<uint32_t> g_lastGameTick{0};  // GetTickCount() at the pawn's last tick
 std::atomic<float> g_cameraYaw{0.0f};     // Spyro's camera, degrees; from the worker
 std::atomic<int> g_cue{0};             // a sound owed to the player: 1 following began, 2 it ended
+std::atomic<bool> g_groundMode{false}; // following, with Spyro's ground being sent
+std::atomic<int> g_groundDumpWanted{0};  // [debug] ground: write what would be sent to a file
 
 void LoadSettings(const Config& config) {
 #define X(name, value) g_places.name = config.GetOffset("places", #name, value);
@@ -107,6 +122,11 @@ void LoadSettings(const Config& config) {
   g_settings.follow.store(config.GetInt("follow", "on", 0));
   g_settings.key.store(config.GetInt("follow", "key", VK_F2));
   g_settings.scale.store(config.GetFloat("follow", "scale", 0.5f));
+  g_settings.ground.store(config.GetInt("follow", "ground", 1));
+  g_settings.groundReach.store(config.GetFloat("ground", "reach", 6000.0f));
+  g_settings.groundUp.store(config.GetFloat("ground", "up", 3000.0f));
+  g_settings.groundDown.store(config.GetFloat("ground", "down", 3000.0f));
+  g_settings.groundComplex.store(config.GetInt("ground", "complex", 0));
   g_settings.relative.store(config.GetInt("follow", "relative", 1));
   g_settings.yaw.store(config.GetFloat("follow", "yaw", 0.0f));
   g_settings.flipY.store(config.GetInt("follow", "flip_y", 1));
@@ -172,6 +192,11 @@ struct Follow {
   uint32_t generation = 0;  // Crash's, when following began
   Vec3 crash0{}, spyro0{};  // where each was at that moment
   Vec3 crashLast{}, target{};  // relative following: Crash a tick ago, and where the pawn has got to
+  // With Spyro's ground being sent: where it was last gathered around, and
+  // the point of Spyro's ground that is Crash's `crash0` (the ground under
+  // the pawn when following began).
+  bool ground = false;
+  Vec3 centre{}, spyroAnchor{};
   // K2_SetActorRotation, likewise.
   uintptr_t setRotation = 0;
   int32_t atRotation = -1, atRotationTeleport = -1;
@@ -188,12 +213,52 @@ void SetMovementTick(const Follow& f, bool enabled) {
   }
 }
 
+// Spyro's collision around `centre`, as ground.h gives it.
+bool GatherGround(const Vec3& centre, std::vector<float>& triangles, ground::Stats& stats, uint32_t& tookUs) {
+  ground::Options options;
+  options.reach = g_settings.groundReach.load();
+  options.up = g_settings.groundUp.load();
+  options.down = g_settings.groundDown.load();
+  options.complex = g_settings.groundComplex.load() != 0;
+  triangles.clear();
+  const uint32_t started = NowUs();
+  const bool ok = ground::Gather(centre, options, triangles, stats);
+  tookUs = static_cast<uint32_t>(ElapsedUs(started, NowUs()));
+  if (!ok) log::Error("ground: the engine's physics could not be asked");
+  return ok;
+}
+
+void DescribeGround(const char* what, const Vec3& centre, const ground::Stats& stats, uint32_t tookUs) {
+  log::Info("ground: %s around (%.0f, %.0f, %.0f): %u triangles%s from %d of %d shapes in %d scenes "
+            "(%d meshes, %d convex, %d boxes, %d balls, %d capsules; left out %d not solid to a pawn, %d pawns, %d height fields, %d other), %.1f ms",
+            what, centre.x, centre.y, centre.z, stats.triangles, stats.full ? " (FULL: more were left out)" : "", stats.used, stats.touched,
+            stats.scenes, stats.meshes, stats.convexes, stats.boxes, stats.spheres, stats.capsules, stats.notSolid, stats.characters,
+            stats.heightFields, stats.others, tookUs / 1000.0f);
+}
+
+// Sends what was gathered around `centre` to Crash, under the join `f` holds.
+void PublishGround(const Follow& f, const Vec3& centre, const std::vector<float>& triangles) {
+  static uint32_t generation = GetTickCount() | 1;  // not a number an earlier run of Spyro left behind
+  GroundPage page{};
+  page.generation = ++generation;
+  page.crashGeneration = f.generation;
+  page.world = mem::Pointer(mem::ImageBase() + g_places.world);
+  page.centre = centre;
+  page.reach = g_settings.groundReach.load();
+  page.spyroAnchor = f.spyroAnchor;
+  page.scale = g_settings.scale.load();
+  page.crashAnchor = f.crash0;
+  g_ground.Publish(page, triangles.data(), static_cast<uint32_t>(triangles.size() / 9));
+}
+
 void Release(Follow& f, uintptr_t pawn, const char* why) {
   // The component belongs to the pawn following began with. If that pawn has
   // gone (a level load), so has the component: leave it be.
   if (pawn == f.pawn) SetMovementTick(f, true);
   log::Info("follow: released (%s)", why);
   f.active = false;
+  f.ground = false;
+  g_groundMode.store(false);
   g_following.store(false);
   g_cue.store(2);
 }
@@ -234,6 +299,28 @@ bool Engage(Follow& f, uintptr_t pawn, const GuestState& guest) {
   f.crash0 = guest.position;
   f.crashLast = guest.position;
   f.target = f.spyro0;
+  f.ground = false;
+  if (g_settings.ground.load() && g_ground.open()) {
+    static std::vector<float> triangles;
+    ground::Stats stats;
+    uint32_t tookUs = 0;
+    if (GatherGround(f.spyro0, triangles, stats, tookUs)) {
+      DescribeGround("gathered", f.spyro0, stats, tookUs);
+      if (!stats.kinds.empty()) log::Info("ground: shapes touched: %s", stats.kinds.c_str());
+      // Crash's position is his feet; the pawn's is its middle. The join is
+      // made at the ground under the pawn.
+      float below = 0.0f;
+      const bool standing = ground::Below(triangles, 0.0f, 0.0f, 0.0f, below);
+      f.spyroAnchor = {f.spyro0.x, f.spyro0.y, f.spyro0.z + (standing ? below : -50.0f)};
+      f.centre = f.spyro0;
+      f.ground = true;
+      PublishGround(f, f.centre, triangles);
+      log::Info("ground: the join: Spyro's (%.1f, %.1f, %.1f), %s, is Crash's (%.2f, %.2f, %.2f)", f.spyroAnchor.x, f.spyroAnchor.y,
+                f.spyroAnchor.z, standing ? "the ground under the pawn" : "50 under the pawn, there being NO ground under it",
+                f.crash0.x, f.crash0.y, f.crash0.z);
+    }
+  }
+  g_groundMode.store(f.ground);
   f.active = true;
   g_following.store(true);
   g_cue.store(1);
@@ -267,6 +354,29 @@ void Face(const Follow& f, uintptr_t pawn, float yawDegrees) {
 void Place(Follow& f, uintptr_t pawn, const GuestState& guest) {
   const float kPi = 3.14159265f;
   const float scale = g_settings.scale.load();
+  if (f.ground) {
+    // The two worlds laid over each other as the ground's join has them:
+    // Crash's y runs the other way, and that is all.
+    const Vec3 to = {f.spyro0.x + scale * (guest.position.x - f.crash0.x), f.spyro0.y - scale * (guest.position.y - f.crash0.y),
+                     f.spyro0.z + scale * (guest.position.z - f.crash0.z)};
+    const float stepX = to.x - f.target.x, stepY = to.y - f.target.y;
+    f.target = to;
+    MoveTo(f, pawn, to);
+    if (stepX * stepX + stepY * stepY > 0.5f * 0.5f) Face(f, pawn, std::atan2(stepY, stepX) * 180.0f / kPi);
+    // He has gone far enough from where the ground was last read: read it again.
+    const float reach = g_settings.groundReach.load(), tall = std::fmin(g_settings.groundUp.load(), g_settings.groundDown.load());
+    if (std::fabs(to.x - f.centre.x) > reach * 0.4f || std::fabs(to.y - f.centre.y) > reach * 0.4f || std::fabs(to.z - f.centre.z) > tall * 0.4f) {
+      static std::vector<float> triangles;
+      ground::Stats stats;
+      uint32_t tookUs = 0;
+      if (GatherGround(to, triangles, stats, tookUs)) {
+        f.centre = to;
+        PublishGround(f, f.centre, triangles);
+        DescribeGround("gathered again", to, stats, tookUs);
+      }
+    }
+    return;
+  }
   if (!g_settings.relative.load()) {
     // Crash's world laid over Spyro's with one fixed turn. Right for one
     // direction of Spyro's camera and backwards for the opposite one.
@@ -354,7 +464,7 @@ void GameTick(uintptr_t pawn) {
       // round or a long run takes Crash somewhere that is nowhere in Spyro's.
       const float dx = guest.position.x - f.crash0.x, dy = guest.position.y - f.crash0.y, dz = guest.position.z - f.crash0.z;
       const float reach = g_settings.reach.load();
-      if (dx * dx + dy * dy + dz * dz > reach * reach) {
+      if (!f.ground && dx * dx + dy * dy + dz * dz > reach * reach) {
         // Put him back where he started rather than leave him out there.
         MoveTo(f, pawn, f.spyro0);
         Release(f, pawn, "Crash went further than the test reaches");
@@ -371,6 +481,33 @@ void GameTick(uintptr_t pawn) {
     }
   }
   if (f.active) Place(f, pawn, guest);
+
+  // [debug] ground: what would be sent, written to a file to be looked at.
+  if (g_groundDumpWanted.exchange(0)) {
+    Vec3 here{};
+    std::vector<float> triangles;
+    ground::Stats stats;
+    uint32_t tookUs = 0;
+    if (PawnLocation(pawn, here) && GatherGround(here, triangles, stats, tookUs)) {
+      DescribeGround("for the file,", here, stats, tookUs);
+      if (!stats.kinds.empty()) log::Info("ground: shapes touched: %s", stats.kinds.c_str());
+      float below = 0.0f;
+      if (ground::Below(triangles, 0.0f, 0.0f, 0.0f, below)) log::Info("ground: the ground under the pawn is %.1f below its middle", -below);
+      else log::Info("ground: there is NO ground under the pawn");
+      const std::wstring path = g_dir + L"crashspyro_ground.bin";
+      const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (file != INVALID_HANDLE_VALUE) {
+        // Count, the centre, then nine floats a triangle measured from it.
+        const uint32_t count = static_cast<uint32_t>(triangles.size() / 9);
+        DWORD written = 0;
+        WriteFile(file, &count, sizeof(count), &written, nullptr);
+        WriteFile(file, &here, sizeof(here), &written, nullptr);
+        WriteFile(file, triangles.data(), static_cast<DWORD>(triangles.size() * sizeof(float)), &written, nullptr);
+        CloseHandle(file);
+        log::Info("ground: wrote %u triangles to crashspyro_ground.bin", count);
+      }
+    }
+  }
 }
 
 void __fastcall OnProcessEvent(void* object, void* function, void* params) {
@@ -468,7 +605,10 @@ HostState Sample() {
     }
   }
   g_pawn.store(pawn);
-  if (Linked()) s.flags |= kHostLinked;
+  if (Linked()) {
+    s.flags |= kHostLinked;
+    if (g_groundMode.load(std::memory_order_relaxed)) s.flags |= kHostGround;
+  }
   return s;
 }
 
@@ -535,6 +675,7 @@ DWORD WINAPI Run(void*) {
   log::Info("exe at 0x%llX, %u bytes", static_cast<unsigned long long>(mem::ImageBase()), mem::ImageSize());
 
   if (!g_link.Open(kSideSpyro)) return 0;
+  g_ground.Open();
   // Whatever the last run of Spyro left in its slot is not this run's.
   g_link.block()->host.Write(HostState{});
   ue::Init(g_places.names);
@@ -548,6 +689,7 @@ DWORD WINAPI Run(void*) {
   if (autoContinue) log::Info("start: pressing A from the title screen until the game is in a level");
   const bool hooked = HookProcessEvent();
 
+  std::string dump = config.GetString("debug", "ground");
   const DWORD started = GetTickCount();
   bool arriving = autoContinue;
   DWORD lastPress = started;
@@ -583,6 +725,11 @@ DWORD WINAPI Run(void*) {
     if (config.Changed()) {
       LoadSettings(config);
       standin::DebugPress(config);
+      const std::string dumpNow = config.GetString("debug", "ground");
+      if (dumpNow != dump) {
+        dump = dumpNow;
+        if (!dumpNow.empty()) g_groundDumpWanted.store(1);
+      }
     }
     // Steam is not up until some way into the game's start.
     if (!steam) steam = steampad::Install(&OnSteam);

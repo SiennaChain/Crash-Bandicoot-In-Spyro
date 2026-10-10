@@ -134,6 +134,10 @@ enum HostFlags : uint32_t {
   // controller's movement and buttons are Crash's, whichever window is in
   // front.
   kHostLinked = 1u << 2,
+  // And Spyro's ground is being sent for Crash to stand on (the ground
+  // mapping, below), the two worlds laid over each other rigidly. Crash
+  // then steers by Spyro's camera, the one the player is looking through.
+  kHostGround = 1u << 3,
 };
 
 // Spyro, sampled once a frame. Unreal's units (centimetres) and axes
@@ -162,12 +166,65 @@ struct SharedBlock {
 
 constexpr uint32_t kMappingSize = 64 * 1024;
 
+// --------------------------------------------------------------- ground ----
+//
+// Spyro's collision near the player, as triangles, for Crash to stand on.
+// Far too big for the block above, and written seldom, so it has a mapping
+// of its own: a header and two pages. Spyro fills the page that is not the
+// latest and then names it the latest; Crash copies the latest and checks,
+// by the page's own sequence number, that it was not rewritten meanwhile.
+
+constexpr wchar_t kGroundMappingName[] = L"Local\\CrashSpyro_ground_v1";
+constexpr uint32_t kGroundMagic = 0x47505343;  // "CSPG"
+constexpr uint32_t kGroundVersion = 1;
+constexpr uint32_t kGroundMaxTriangles = 300000;
+constexpr uint32_t kGroundNone = 0xFFFFFFFF;
+
+struct GroundHeader {
+  std::atomic<uint32_t> magic;
+  uint32_t version;
+  uint32_t size;
+  std::atomic<uint32_t> latest;  // 0 or 1; kGroundNone until a page is whole
+};
+
+struct GroundPage {
+  std::atomic<uint32_t> seq;  // odd while it is being written
+  uint32_t generation;        // one more each time Spyro fills a page
+  uint32_t triangles;
+  uint32_t crashGeneration;   // GuestState::generation the join was made under
+  uint64_t world;             // HostState::world it was read from
+  // Where it was gathered around, in Unreal's world and units. The corners
+  // that follow are measured from here.
+  Vec3 centre;
+  float reach;
+  // The join. This point of Unreal's world ...
+  Vec3 spyroAnchor;
+  float scale;                // Unreal units per Crash unit
+  // ... is this point of Crash's, and Crash's y runs the other way:
+  //   crash = crashAnchor + (dx, -dy, dz) / scale,  d = spyro - spyroAnchor
+  Vec3 crashAnchor;
+  uint32_t reserved;
+  // then `triangles` times nine floats: three corners, x y z each
+};
+
+constexpr uint32_t kGroundPagesAt = 4096;
+constexpr uint32_t kGroundPageBytes = (static_cast<uint32_t>(sizeof(GroundPage)) + kGroundMaxTriangles * 36 + 4095) & ~4095u;
+constexpr uint32_t kGroundMappingSize = kGroundPagesAt + 2 * kGroundPageBytes;
+
+// Spyro's point `s` (Unreal's world) in Crash's world, by a page's join.
+inline Vec3 GroundToCrash(const GroundPage& page, const Vec3& s) {
+  return {page.crashAnchor.x + (s.x - page.spyroAnchor.x) / page.scale, page.crashAnchor.y - (s.y - page.spyroAnchor.y) / page.scale,
+          page.crashAnchor.z + (s.z - page.spyroAnchor.z) / page.scale};
+}
+
 static_assert(sizeof(Vec3) == 12, "Vec3 is three packed floats");
 static_assert(sizeof(PeerInfo) == 16, "PeerInfo layout");
 static_assert(sizeof(Header) == 48, "Header layout");
 static_assert(sizeof(GuestState) == 304, "GuestState layout");
 static_assert(sizeof(HostState) == 80, "HostState layout");
 static_assert(sizeof(SharedBlock) <= kMappingSize, "block must fit the mapping");
+static_assert(sizeof(GroundHeader) == 16, "GroundHeader layout");
+static_assert(sizeof(GroundPage) == 72, "GroundPage layout");
 static_assert(std::atomic<uint32_t>::is_always_lock_free, "atomics must be plain words to share them");
 
 }  // namespace csp

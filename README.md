@@ -18,12 +18,17 @@ and talk to each other; nothing of Crash is in Spyro yet. See
 - `docs/DESIGN.md`: the plan, who owns what, and the phases.
 - `docs/PHASE0.md`: the link between the two games. Done: what exists, what
   was checked and how.
-- `docs/PHASE1.md`: Spyro's ground under Crash's feet. Under way.
+- `docs/PHASE1.md`: Spyro's ground under Crash's feet. Working with nobody
+  at the controller; not yet played by hand.
 
 ## Needs
 
 Both games on Steam, on Windows, in the builds named in `docs/PHASE0.md`.
-To build: Visual Studio with the desktop C++ workload.
+To build: Visual Studio with the desktop C++ workload, and PhysX 3.4's
+headers, which are not in this repository. They come with Unreal Engine
+4.19's source (the engine Spyro was built on); `tools\build.ps1` finds an
+engine installed in the usual place, and `-DCSP_PHYSX_ROOT=...` names any
+other (`CMakeLists.txt`).
 
 ```powershell
 tools\build.ps1

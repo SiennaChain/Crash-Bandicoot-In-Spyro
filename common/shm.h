@@ -35,4 +35,32 @@ class SharedMapping {
   Side self_ = kSideSpyro;
 };
 
+// The ground mapping (csp_protocol.h). Spyro publishes, Crash reads.
+class GroundMapping {
+ public:
+  GroundMapping() = default;
+  ~GroundMapping();
+  GroundMapping(const GroundMapping&) = delete;
+  GroundMapping& operator=(const GroundMapping&) = delete;
+
+  bool Open();
+  void Close();
+  bool open() const { return header_ != nullptr; }
+
+  // Spyro: `fields` says what the page is (its seq and triangle count are
+  // filled in here), `corners` is nine floats a triangle.
+  void Publish(const GroundPage& fields, const float* corners, uint32_t triangles);
+
+  // Crash: the generation of the latest whole page, 0 if there is none.
+  uint32_t Latest() const;
+  // Crash: copies the latest page out. False if there is none, or Spyro
+  // rewrote it meanwhile (ask again next frame).
+  bool Read(GroundPage& fields, float* corners, uint32_t room) const;
+
+ private:
+  GroundPage* Page(uint32_t index) const;
+  void* handle_ = nullptr;
+  GroundHeader* header_ = nullptr;
+};
+
 }  // namespace csp

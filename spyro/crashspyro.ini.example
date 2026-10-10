@@ -12,6 +12,9 @@ without_launcher = 1
 ; A line in crashspyro_spyro.log this often saying what the bridge can see,
 ; as well as whenever that changes. 0 = only when it changes.
 status_seconds = 10
+; ground = 1 (any change of the text): writes the collision that would be
+; sent to crashspyro_ground.bin beside the exe, and logs how far the ground
+; is under the pawn.
 
 [start]
 ; 1 = press the controller's A for the player from the title screen until the
@@ -28,16 +31,22 @@ auto_continue = 0
 only_in_front = 1
 
 [follow]
-; The follow test: Spyro's character is put where Crash is, every frame, and
+; Following: Spyro's character is put where Crash is, every frame, and
 ; Spyro's own movement is switched off meanwhile. Pressing `key` (a Windows
 ; virtual-key number; 0x71 is F2) switches it on and off, and so does
 ; changing `on` here and saving. It needs Crash on foot in a level and Spyro
 ; in one.
 on = 0
 key = 0x71
+; 1 = Spyro's ground goes to Crash to stand on, and the two worlds are laid
+; over each other exactly, joined where each character was standing when
+; following began (docs/PHASE1.md). 0 = the Phase 0 test below: Crash stays
+; on his own level's ground and only his steps are copied.
+ground = 1
 ; Unreal units moved per Crash unit moved. 0.5 is measured: at that, Crash
 ; runs as fast as Spyro and his jump is as high as Spyro's.
 scale = 0.5
+; The rest is for ground = 0.
 ; 1 = each step Crash takes is turned from his camera to Spyro's, so "away
 ; from the player" is away from the player in both games wherever the
 ; cameras point. 0 = Crash's world laid over Spyro's with one fixed turn
@@ -49,6 +58,17 @@ flip_y = 1
 ; Following lets go, and puts Spyro back where it began, if Crash gets this
 ; many of his own units from where it began (he died, or ran a long way).
 reach = 6000
+
+[ground]
+; How much of Spyro's collision is sent: this far from the pawn each way
+; along the ground, and this far above and below it, in Unreal units. It is
+; read again when the pawn has gone 0.4 of the reach from the last time.
+reach = 6000
+up = 3000
+down = 3000
+; 0 = the collision the engine moves its own characters against (simple).
+; 1 = the detailed collision of every mesh instead: many more triangles.
+complex = 0
 
 [places]
 ; Where things are in the one build of the exe the mod knows (see

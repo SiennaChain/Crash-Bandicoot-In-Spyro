@@ -59,7 +59,30 @@ if(WIN32)
 
   csp_bridge(csp_crash crash xinput9_1_0)
   csp_bridge(csp_spyro spyro xinput1_3)
-  target_sources(csp_spyro PRIVATE spyro/src/ue.cpp)
+  target_sources(csp_spyro PRIVATE spyro/src/ue.cpp spyro/src/ground.cpp)
+
+  # The Spyro bridge reads the game's collision through PhysX 3.4's own
+  # interfaces, so it needs PhysX 3.4's headers (not its libraries: the
+  # game's own DLL is what answers). They are not in this repository. They
+  # come with Unreal Engine 4.19's source, which is the engine the game was
+  # built on and whose PhysX DLLs the game ships unchanged.
+  set(CSP_PHYSX_ROOT "" CACHE PATH
+      "Folder holding PhysX_3.4 and PxShared: Unreal Engine 4.19's Engine/Source/ThirdParty/PhysX3")
+  if(NOT CSP_PHYSX_ROOT)
+    foreach(drive C D E F)
+      if(EXISTS "${drive}:/Program Files/Epic Games/UE_4.19/Engine/Source/ThirdParty/PhysX3/PhysX_3.4/Include/PxPhysics.h")
+        set(CSP_PHYSX_ROOT "${drive}:/Program Files/Epic Games/UE_4.19/Engine/Source/ThirdParty/PhysX3")
+        break()
+      endif()
+    endforeach()
+  endif()
+  if(NOT EXISTS "${CSP_PHYSX_ROOT}/PhysX_3.4/Include/PxPhysics.h")
+    message(FATAL_ERROR "PhysX 3.4's headers were not found. Install Unreal Engine 4.19 with its source, "
+                        "or pass -DCSP_PHYSX_ROOT=<folder holding PhysX_3.4 and PxShared>.")
+  endif()
+  target_include_directories(csp_spyro SYSTEM PRIVATE
+    "${CSP_PHYSX_ROOT}/PhysX_3.4/Include"
+    "${CSP_PHYSX_ROOT}/PxShared/include")
 
   add_executable(csp_monitor tools/monitor/main.cpp)
   target_link_libraries(csp_monitor PRIVATE csp_protocol)

@@ -19,9 +19,9 @@ not do is anything about Spyro's ground: that is Phase 1 (`docs/PHASE1.md`).
 | 2 | Each stand-in DLL forwards XInput to the real one | done outside the games (below); both games start and run with them in; no controller has been connected yet |
 | 3 | Each bridge loads in its game, recognises the build, writes its log | **seen** |
 | 4 | Crash publishes player, model matrix, camera, clock, level from its game thread | **seen**, 60 frames a second, in the Crash 3 hub and in Toad Village |
-| 5 | Spyro publishes pawn and camera | **seen** in Sunny Villa |
+| 5 | Spyro publishes pawn and camera | **seen** in Sunrise Spring |
 | 6 | Each sees the other: heartbeats and frame counts both ways | **seen**, both logs and the monitor |
-| 7 | Spyro's bridge gets onto Spyro's game thread and can look objects up by name | **seen**: the tick runs 60 times a second in Sunny Villa; the pawn's class read back by name |
+| 7 | Spyro's bridge gets onto Spyro's game thread and can look objects up by name | **seen**: the tick runs 60 times a second in Sunrise Spring; the pawn's class read back by name |
 | 8 | Follow test: Spyro's pawn placed at Crash's position every frame, released on a key (F2) | **seen** (below) |
 | 9 | Crash keeps simulating, and listening to the controller, when its window is not in front | **seen** for simulating: in Toad Village with neither game in front, its gameplay clock kept counting at 60 a second. The controller has not been tried. |
 | 10 | Axes and scale between the two games measured | **measured**: one Crash unit is half an Unreal unit; his world is right-handed with z up (below) |
@@ -136,8 +136,8 @@ what Phase 1 has to get Spyro's world into, or around.
 | `world` | `exe+0x3415F30` | `GWorld` | **yes** |
 | world `+0x140` | | Game instance; `+0x38` its local players (array, count at `+0x40`) | **yes** |
 | local player `+0x30` | | Player controller | **yes** |
-| controller `+0x388` | | The pawn it is driving | **yes**: in Sunny Villa (Spyro 3) it is a `BP_CPS1999_Playable_C`, read back by name |
-| pawn `+0x158` | | Root component; `+0x1A0` its world location, `+0x160` relative location | **yes**: (-299705, -297964, 266) at Sunny Villa's start, the same place the earlier work recorded. **Not the same on every load:** after a restart the same spot read (295, -297964, 266), 300,000 different in x. The engine moves the world's origin about, so a position means nothing without the origin it was read under; anything that carries Spyro's world across (Phase 1) has to carry that too. |
+| controller `+0x388` | | The pawn it is driving | **yes**: in Sunrise Spring (Spyro 3) it is a `BP_CPS1999_Playable_C`, read back by name |
+| pawn `+0x158` | | Root component; `+0x1A0` its world location, `+0x160` relative location | **yes**: (-299705, -297964, 266) at Sunrise Spring's start, the same place the earlier work recorded. **Not the same on every load:** after a restart the same spot read (295, -297964, 266), 300,000 different in x. The engine moves the world's origin about, so a position means nothing without the origin it was read under; anything that carries Spyro's world across (Phase 1) has to carry that too. |
 | root `+0x16C` | | Relative rotation (pitch, yaw, roll) | reads (0, -90, 0) at the start, which fits; not yet seen to change |
 | controller `+0x3A0` | | Camera manager; `+0x3AC` camera rotation | **yes**: yaw changes as the camera turns |
 | manager `+0x3A0`, `+0x3B8` | | Camera location and field of view | **yes**: the camera sits about 140 units from the pawn and 40 above it; field of view 80 in the level, 90 in menus |
@@ -181,7 +181,11 @@ teleport) from inside its own tick. Both are found by name each run, not by
 address; the function's parameters came out at location `+0`, sweep `+12`,
 teleport `+152`.
 
-What was seen, 2026-10-10, Crash in Toad Village and Spyro in Sunny Villa:
+(Corrected: these notes first called Spyro's level Sunny Villa throughout.
+It is Sunrise Spring, the home world the save starts in; the positions
+recorded here lie inside the collision later read out there.)
+
+What was seen, 2026-10-10, Crash in Toad Village and Spyro in Sunrise Spring:
 
 - The player ran Crash about with the controller and saw Spyro's character
   move with him ("both characters move when crash is controlled").
@@ -203,7 +207,7 @@ What was seen, 2026-10-10, Crash in Toad Village and Spyro in Sunny Villa:
   or a bouncing key), which nobody could have seen: hence the beeps, and a
   second during which another press is ignored.
 - Left on while Crash ran the length of his level, it dragged Spyro's
-  character far outside Sunny Villa and the game had to be restarted. It
+  character far outside Sunrise Spring and the game had to be restarted. It
   now lets go, and puts the pawn back where it started, if Crash gets more
   than `reach` (6000) units from where following began.
 
@@ -215,7 +219,7 @@ for what that took, and for a claim made here earlier that was wrong.
 ## Scale and axes
 
 Measured 2026-10-10. Spyro through his bridge's own stick and A button in
-Sunny Villa; Crash by watching the player run and jump him in Toad Village,
+Sunrise Spring; Crash by watching the player run and jump him in Toad Village,
 one sample a game frame.
 
 | | Crash, in his units | Spyro, in Unreal's | Ratio |
@@ -314,7 +318,7 @@ What has been seen:
   Spyro), the bridge's stick held up for 1.2 s moved Spyro's character 307
   units along its camera's line, and back again held down.
 - The player's test, recorded from outside both games once a second for 235
-  s (2026-10-10, Crash in Toad Village, Spyro in Sunny Villa):
+  s (2026-10-10, Crash in Toad Village, Spyro in Sunrise Spring):
   - **Follow on, neither game's window in front, 47 s:** Crash moved in 45
     of them and Spyro's character in 44. So Crash answers the controller
     without being in front (kept awake, and let hear it because linked), and

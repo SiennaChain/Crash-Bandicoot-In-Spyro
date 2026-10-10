@@ -11,6 +11,13 @@ without_launcher = 1
 ; A line in crashspyro_crash.log this often saying what the bridge can see,
 ; as well as whenever that changes. 0 = only when it changes.
 status_seconds = 10
+; Experiments from docs/PHASE1.md. Each acts when its text is changed and
+; the file saved, with Crash on foot in a level:
+;   fence = 1   nine still copies of his capsule in a row ahead of him
+;   slab = 1    a box to stand on (slab_top, slab_ahead, slab_half, slab_thick: metres)
+;   mesh = 1    a ramp of triangles (mesh_rise, mesh_run: metres)
+;   clear = 1   takes out everything the three above put in
+; and press = LS_UP 400 #1 has the bridge hold the stick or a button itself.
 
 [start]
 ; 1 = go from the title screen to the Crash 3 hub with the save in use, with
@@ -25,6 +32,15 @@ auto_load = 0
 ; Crash's whichever window is in front). 0 = always, as the game does by
 ; itself.
 only_in_front = 1
+
+[ground]
+; While Spyro sends its ground (docs/PHASE1.md):
+; 1 = the stick is turned from Crash's camera to Spyro's before Crash hears
+; it, so he goes where the player, looking at Spyro's picture, points.
+steer_by_spyro = 1
+; 1 = the level's own ground and walls are taken out of Crash's physics
+; meanwhile, and put back afterwards.
+hide_own_level = 1
 
 [places]
 ; Where things are in the one build of the exe the mod knows (see
