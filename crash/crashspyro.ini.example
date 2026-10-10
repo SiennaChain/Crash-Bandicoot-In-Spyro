@@ -1,0 +1,33 @@
+; Settings for the Crash bridge (xinput9_1_0.dll). Copy to crashspyro.ini in
+; the folder CrashBandicootNSaneTrilogy.exe is in; tools\install.ps1 does it.
+; The bridge re-reads this file whenever it is saved, while the game runs.
+
+[bridge]
+; There is no launcher yet. Without this the bridge does nothing at all,
+; which is what it should do when Crash is being played by itself.
+without_launcher = 1
+
+[debug]
+; A line in crashspyro_crash.log this often saying what the bridge can see,
+; as well as whenever that changes. 0 = only when it changes.
+status_seconds = 10
+
+[start]
+; 1 = go from the title screen to the Crash 3 hub with the save in use, with
+; nobody at the controller: the bridge presses A at the title, then right,
+; right and A on "Continue" under Crash Warped. The opening videos still
+; play. Read when the game starts.
+auto_load = 0
+
+[pad]
+; 1 = Crash hears the controller only while its window is the one in front,
+; or while Spyro's character is following Crash (then the controller is
+; Crash's whichever window is in front). 0 = always, as the game does by
+; itself.
+only_in_front = 1
+
+[places]
+; Where things are in the one build of the exe the mod knows (see
+; docs/PHASE0.md). The values built in are used unless one is given here,
+; e.g. while hunting for something that has moved:
+; actorList = 0x1A9E778

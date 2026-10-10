@@ -1,0 +1,9 @@
+build*/
+out/
+dist/
+.vs/
+*.log
+crashspyro.ini
+# Anything taken from either game (dumps, captures, converted assets) stays
+# on the machine it came from.
+local/

@@ -1,0 +1,7 @@
+LIBRARY xinput9_1_0
+EXPORTS
+  XInputGetCapabilities = Proxy_XInputGetCapabilities
+  XInputGetDSoundAudioDeviceGuids = Proxy_XInputGetDSoundAudioDeviceGuids
+  XInputGetState = Proxy_XInputGetState
+  XInputSetState = Proxy_XInputSetState
+  CrashSpyroBridgeMarker DATA
