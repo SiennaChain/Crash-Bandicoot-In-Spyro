@@ -230,10 +230,12 @@ bool GatherGround(const Vec3& centre, std::vector<float>& triangles, ground::Sta
 
 void DescribeGround(const char* what, const Vec3& centre, const ground::Stats& stats, uint32_t tookUs) {
   log::Info("ground: %s around (%.0f, %.0f, %.0f): %u triangles%s from %d of %d shapes in %d scenes "
-            "(%d meshes, %d convex, %d boxes, %d balls, %d capsules; left out %d not solid to a pawn, %d pawns, %d height fields, %d other), %.1f ms",
+            "(%d meshes, %d convex, %d boxes, %d balls, %d capsules; left out %d not solid to a pawn, %d the player passes through, "
+            "%d pawns, %d height fields, %d other; the player's capsule %s, blocking 0x%08X), %.1f ms",
             what, centre.x, centre.y, centre.z, stats.triangles, stats.full ? " (FULL: more were left out)" : "", stats.used, stats.touched,
-            stats.scenes, stats.meshes, stats.convexes, stats.boxes, stats.spheres, stats.capsules, stats.notSolid, stats.characters,
-            stats.heightFields, stats.others, tookUs / 1000.0f);
+            stats.scenes, stats.meshes, stats.convexes, stats.boxes, stats.spheres, stats.capsules, stats.notSolid, stats.passedThrough,
+            stats.characters, stats.heightFields, stats.others, stats.pawnFound ? "found" : "NOT found", stats.pawnBlocks,
+            tookUs / 1000.0f);
 }
 
 // Sends what was gathered around `centre` to Crash, under the join `f` holds.
@@ -302,23 +304,28 @@ bool Engage(Follow& f, uintptr_t pawn, const GuestState& guest) {
   f.ground = false;
   if (g_settings.ground.load() && g_ground.open()) {
     static std::vector<float> triangles;
+    static bool waiting = false;
     ground::Stats stats;
     uint32_t tookUs = 0;
-    if (GatherGround(f.spyro0, triangles, stats, tookUs)) {
-      DescribeGround("gathered", f.spyro0, stats, tookUs);
-      if (!stats.kinds.empty()) log::Info("ground: shapes touched: %s", stats.kinds.c_str());
-      // Crash's position is his feet; the pawn's is its middle. The join is
-      // made at the ground under the pawn.
-      float below = 0.0f;
-      const bool standing = ground::Below(triangles, 0.0f, 0.0f, 0.0f, below);
-      f.spyroAnchor = {f.spyro0.x, f.spyro0.y, f.spyro0.z + (standing ? below : -50.0f)};
-      f.centre = f.spyro0;
-      f.ground = true;
-      PublishGround(f, f.centre, triangles);
-      log::Info("ground: the join: Spyro's (%.1f, %.1f, %.1f), %s, is Crash's (%.2f, %.2f, %.2f)", f.spyroAnchor.x, f.spyroAnchor.y,
-                f.spyroAnchor.z, standing ? "the ground under the pawn" : "50 under the pawn, there being NO ground under it",
-                f.crash0.x, f.crash0.y, f.crash0.z);
+    if (!GatherGround(f.spyro0, triangles, stats, tookUs)) return false;
+    // Crash's position is his feet; the pawn's is its middle. The join is
+    // made at the ground under the pawn, so there has to be some: there is
+    // none while a level is still arriving.
+    float below = 0.0f;
+    if (!ground::Below(triangles, 0.0f, 0.0f, 0.0f, below)) {
+      if (!waiting) log::Info("follow: waiting, there being no ground under the pawn yet (%u triangles within reach)", stats.triangles);
+      waiting = true;
+      return false;
     }
+    waiting = false;
+    DescribeGround("gathered", f.spyro0, stats, tookUs);
+    if (!stats.kinds.empty()) log::Info("ground: shapes touched: %s", stats.kinds.c_str());
+    f.spyroAnchor = {f.spyro0.x, f.spyro0.y, f.spyro0.z + below};
+    f.centre = f.spyro0;
+    f.ground = true;
+    PublishGround(f, f.centre, triangles);
+    log::Info("ground: the join: Spyro's (%.1f, %.1f, %.1f), the ground under the pawn, is Crash's (%.2f, %.2f, %.2f)", f.spyroAnchor.x,
+              f.spyroAnchor.y, f.spyroAnchor.z, f.crash0.x, f.crash0.y, f.crash0.z);
   }
   g_groundMode.store(f.ground);
   f.active = true;
@@ -431,16 +438,20 @@ void GameTick(uintptr_t pawn) {
   static bool wasDown = false;
   static int lastSetting = 0;
   static bool complained = false;
-  static DWORD lastToggle = 0;
+  static DWORD lastToggle = 0, lastTry = 0;
+  // Whether following is asked for. It stays asked for through whatever
+  // interrupts it (Spyro going to another level, Crash being restarted) and
+  // begins again by itself when it can; only the key or the setting ends it.
+  static bool want = false;
 
-  bool want = f.active;
   const bool down = (GetAsyncKeyState(g_settings.key.load()) & 0x8000) != 0;
   // One press, one change: a second press (or a bouncing key) within a
   // second of the first undid it before anyone could see it had worked.
   const DWORD now = GetTickCount();
   if (down && !wasDown && static_cast<DWORD>(now - lastToggle) > 1000) {
-    want = !f.active;
+    want = !want;
     lastToggle = now;
+    if (!want && !f.active) log::Info("follow: no longer asked for");
   }
   wasDown = down;
   const int setting = g_settings.follow.load();
@@ -452,6 +463,16 @@ void GameTick(uintptr_t pawn) {
   GuestState guest{};
   const bool linked = g_link.PeerAlive() && g_link.block()->guest.Read(guest);
   const bool player = linked && (guest.flags & kGuestPlayer) && !(guest.flags & kGuestParented);
+  // Whether Crash is standing still: the join is made between where the two
+  // are standing, and means nothing made in the middle of a jump or a fall.
+  static Vec3 crashWas{};
+  static DWORD crashMoved = 0;
+  if (player && (std::fabs(guest.position.x - crashWas.x) > 0.05f || std::fabs(guest.position.y - crashWas.y) > 0.05f ||
+                 std::fabs(guest.position.z - crashWas.z) > 0.05f)) {
+    crashWas = guest.position;
+    crashMoved = now;
+  }
+  const bool standing = player && static_cast<DWORD>(now - crashMoved) >= 300;
 
   if (f.active) {
     if (!want) Release(f, pawn, "asked to");
@@ -468,15 +489,18 @@ void GameTick(uintptr_t pawn) {
         // Put him back where he started rather than leave him out there.
         MoveTo(f, pawn, f.spyro0);
         Release(f, pawn, "Crash went further than the test reaches");
-        lastSetting = setting;
+        want = false;
       }
     }
-  } else if (want) {
-    if (player) {
-      Engage(f, pawn, guest);
-      complained = false;
+  }
+  // Not `else`: a pawn that has just been let go because Spyro changed
+  // level is taken up again in the new one, at this very tick if it can be.
+  if (!f.active && want && static_cast<DWORD>(now - lastTry) >= 250) {
+    lastTry = now;
+    if (standing) {
+      if (Engage(f, pawn, guest)) complained = false;
     } else if (!complained) {
-      log::Info("follow: asked for, but %s", linked ? "Crash has no player on foot yet" : "Crash is not there");
+      log::Info("follow: asked for, but %s", player ? "Crash is not standing still yet" : linked ? "Crash has no player on foot yet" : "Crash is not there");
       complained = true;
     }
   }
@@ -605,10 +629,11 @@ HostState Sample() {
     }
   }
   g_pawn.store(pawn);
-  if (Linked()) {
-    s.flags |= kHostLinked;
-    if (g_groundMode.load(std::memory_order_relaxed)) s.flags |= kHostGround;
-  }
+  // Ground is "being sent" for as long as following with it is on, also
+  // while Spyro is paused or in a menu and the pawn is not ticking: Crash
+  // keeps it under his feet and simply hears no controller meanwhile.
+  if (g_groundMode.load(std::memory_order_relaxed)) s.flags |= kHostGround;
+  if (Linked()) s.flags |= kHostLinked;
   return s;
 }
 

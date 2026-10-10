@@ -27,6 +27,7 @@
 #include "shm.h"
 #include "standin.h"
 #include "steampad.h"
+#include "watch.h"
 
 namespace {
 
@@ -63,6 +64,7 @@ using namespace csp;
   X(cameraPosition, 0x80)           \
   X(cameraView, 0x180)              \
   X(cameraProjection, 0x1C0)        \
+  X(cameraUpdate, 0x3775E0)         \
   /* the clock */                   \
   X(clockSimTicks, 0x20)            \
   X(clockPaused, 0x2C)              \
@@ -93,6 +95,8 @@ struct Places {
 // encrypted and unpacks itself as it starts, after this DLL is loaded, so
 // these bytes turning up is also how we know the code is there to hook.
 constexpr char kFramePrefix[] = "48895c240848896c2410488974241848897c242041564883";
+// The routine that works out one camera for the frame (docs/PHASE2.md).
+constexpr char kCameraUpdatePrefix[] = "488bc4554156488d68a14881ece8000000";
 // And the two of Havok's routines the bridge calls.
 constexpr char kBodyCinfoCtorPrefix[] = "48895c2408574883ec20488bd94883c1";
 constexpr char kCreateBodyPrefix[] = "44894c24204c8944241853555657415441554156";
@@ -117,6 +121,9 @@ std::atomic<uint32_t> g_generation{0};
 std::atomic<uintptr_t> g_strangeActor{0};
 std::atomic<int> g_padOnlyInFront{1};  // [pad] only_in_front
 std::atomic<int> g_steerBySpyro{1};    // [ground] steer_by_spyro
+// [view] by_spyro: Crash's camera is put where Spyro's is (Phase 2).
+// [debug] camera_test: it is swung round Crash instead, to see that it can be.
+std::atomic<int> g_viewBySpyro{1}, g_cameraTest{0};
 // [ground] hide_own_level: 0 nothing; 1 the level's still meshes (its ground
 // and walls); 2 every still body of the level's (crates and triggers too).
 std::atomic<int> g_hideOwnLevel{2};
@@ -129,6 +136,8 @@ void LoadPlaces(const Config& config) {
 #undef X
   g_padOnlyInFront.store(config.GetInt("pad", "only_in_front", 1));
   g_steerBySpyro.store(config.GetInt("ground", "steer_by_spyro", 1));
+  g_viewBySpyro.store(config.GetInt("view", "by_spyro", 1));
+  g_cameraTest.store(config.GetInt("debug", "camera_test", 0));
   g_hideOwnLevel.store(config.GetInt("ground", "hide_own_level", 2));
 }
 
@@ -163,8 +172,12 @@ uint32_t OnPad(uint32_t index, uint32_t result, pad::State* state) {
   const bool ours = standin::Fill(index, state);
   if (!ours && result != 0) return result;
   HostState host{};
-  const bool linked = g_link.block() && g_link.PeerAlive() && g_link.block()->host.Read(host) && (host.flags & kHostLinked);
-  if (!ours && !linked && g_padOnlyInFront.load(std::memory_order_relaxed) && !pad::GameInFront()) pad::Quiet(state);
+  const bool have = g_link.block() && g_link.PeerAlive() && g_link.block()->host.Read(host);
+  const bool linked = have && (host.flags & kHostLinked);
+  // Spyro has stopped for a moment (paused, a menu) with Crash on its
+  // ground: Crash waits where he is, whichever window is in front.
+  const bool held = have && (host.flags & kHostGround) && !linked;
+  if (!ours && (held || (!linked && g_padOnlyInFront.load(std::memory_order_relaxed) && !pad::GameInFront()))) pad::Quiet(state);
   if (linked && (host.flags & kHostGround) && (host.flags & kHostCamera) && g_steerBySpyro.load(std::memory_order_relaxed)) {
     SteerBySpyro(state, host.cameraRotation.y);
   }
@@ -636,8 +649,16 @@ struct SpyroGround {
   std::vector<Piece> old;  // superseded, each destroyed a few frames after what replaced it went in
   uintptr_t hiddenWorld = 0;
   std::vector<uint32_t> hidden;  // the level's own, out of the world meanwhile
+  float homeZ = 0.0f;            // how high Crash stood when they were taken out
+  // Something to stand on where he is, for when Spyro's ground goes and his
+  // own level's is not under him (he is lower than it, or to one side).
+  Piece rest;
   DWORD lastWanted = 0;
   std::vector<float> corners, local;
+  // The join the ground in the world was laid by: what turns a place in
+  // Spyro's world into one in Crash's. No triangle count: it is not a page.
+  GroundPage join{};
+  bool joined = false;
 } g_spyroGround;
 
 // Destroys a piece's body if the world it was put in is still the world,
@@ -654,10 +675,11 @@ void DropPiece(Piece& piece, uintptr_t world) {
   piece = Piece{};
 }
 
-void HideOwnLevel(const Physics& physics) {
+void HideOwnLevel(const Physics& physics, float crashZ) {
   SpyroGround& g = g_spyroGround;
   const int how = g_hideOwnLevel.load();
   if (!how || g.hiddenWorld == physics.world) return;
+  g.homeZ = crashZ;
   const Places& p = g_places;
   const uintptr_t remove = mem::ImageBase() + p.removeBodies;
   if (!mem::StartsWith(remove, kRemoveBodiesPrefix)) {
@@ -736,11 +758,17 @@ void BuildGround(const Physics& physics, const GroundPage& page, const float* co
   if (shape) number = MakeStillBody(physics, shape, position);
   const float tookMs = ElapsedUs(started, NowUs()) / 1000.0f;
 
-  if (g.now.body != 0x7FFFFFFF || g.now.shape) {
-    g.now.frame = g_frames.load();
-    g.old.push_back(g.now);
+  // What he was standing on meanwhile goes the same way as the ground
+  // before this one: a few frames after this one is in.
+  for (Piece* was : {&g.now, &g.rest}) {
+    if (was->body == 0x7FFFFFFF && !was->shape) continue;
+    was->frame = g_frames.load();
+    g.old.push_back(*was);
+    *was = Piece{};
   }
   g.now = Piece{physics.world, number, shape, mesh, 0};
+  std::memcpy(static_cast<void*>(&g.join), &page, sizeof(GroundPage));
+  g.joined = true;
   log::Info("ground: Spyro's ground, page %u: %u triangles around his (%.0f, %.0f, %.0f) as body %u at (%.2f, %.2f, %.2f) m, %.1f ms to make. "
             "Crash is at (%.2f, %.2f, %.2f) m",
             page.generation, count, page.centre.x, page.centre.y, page.centre.z, number, position[0], position[1], position[2], tookMs,
@@ -757,6 +785,7 @@ void TendGround(uintptr_t actor, const GuestState& s) {
 
   // A world that has gone took its bodies with it.
   if (g.now.world && g.now.world != world) DropPiece(g.now, world);
+  if (g.rest.world && g.rest.world != world) DropPiece(g.rest, world);
   if (g.hiddenWorld && g.hiddenWorld != world) ShowOwnLevel(world);
   // What was superseded goes once its successor has been in for a few frames.
   size_t kept = 0;
@@ -772,11 +801,29 @@ void TendGround(uintptr_t actor, const GuestState& s) {
   const DWORD now = GetTickCount();
   if (!wanted) {
     // Not at once: one missed heartbeat is not the end of it.
-    if ((g.now.shape || g.hiddenWorld) && static_cast<DWORD>(now - g.lastWanted) > 500) {
-      ShowOwnLevel(world);
-      DropPiece(g.now, world);
+    if (g.now.shape && static_cast<DWORD>(now - g.lastWanted) > 500) {
+      // He has to be left standing on something. If he is no lower than he
+      // was when his own level's ground was taken away, that ground is under
+      // him or he will drop onto it: put it back. If he is lower, it would
+      // come back around him and hold him inside it, so it stays out and he
+      // gets a slab of his own where he stands, until Spyro's ground returns.
+      Physics physics;
+      const bool found = (s.flags & kGuestPlayer) && world && FindPhysics(actor, physics);
+      const bool above = !found || s.position.z >= g.homeZ - 1.0f;
+      if (above) {
+        ShowOwnLevel(world);
+      } else if (!g.rest.shape) {
+        const uintptr_t shape = MakeBoxShape(3.0f, 3.0f, 0.0f, -0.5f);
+        const float position[4] = {physics.crash.position[0], physics.crash.position[1], physics.crash.position[2], 0.0f};
+        const uint32_t number = shape ? MakeStillBody(physics, shape, position) : 0x7FFFFFFF;
+        g.rest = Piece{physics.world, number, shape, nullptr, 0};
+      }
+      g.now.frame = g_frames.load();
+      g.old.push_back(g.now);
+      g.now = Piece{};
       g.built = 0;
-      log::Info("ground: Spyro's ground is no longer wanted; taken out");
+      g.joined = false;
+      log::Info("ground: Spyro's ground is no longer wanted and is taken out; Crash is left on %s", above ? "his own level's" : "a slab where he stands");
     }
     return;
   }
@@ -793,7 +840,91 @@ void TendGround(uintptr_t actor, const GuestState& s) {
   Physics physics;
   if (!FindPhysics(actor, physics)) return;
   BuildGround(physics, page, g.corners.data());
-  HideOwnLevel(physics);
+  HideOwnLevel(physics, s.position.z);
+}
+
+// ------------------------------------------------------------ the camera --
+//
+// Phase 2's first step (docs/PHASE2.md): Crash's game draws its picture
+// through a camera object it works out afresh every frame. Straight after
+// it has, the bridge puts its own view in: Spyro's camera, taken into
+// Crash's world by the ground's join, so that what Crash's game draws is
+// Crash as Spyro's camera would see him.
+//
+// The view is sixteen floats, a row for each of the world's axes and one
+// for the eye: (right, up, back) along x, along y, along z, then minus the
+// eye measured along each. The world is right-handed with z up, and the
+// camera looks along minus its own z.
+
+using CameraUpdateFn = uintptr_t (*)(void* camera, float seconds);
+CameraUpdateFn g_cameraUpdate = nullptr;
+
+void WriteView(uintptr_t camera, const float eye[3], const float ahead[3], float horizontalFovDegrees) {
+  const Places& p = g_places;
+  float f[3] = {ahead[0], ahead[1], ahead[2]};
+  const float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+  if (fl < 1e-4f) return;
+  for (float& v : f) v /= fl;
+  // right = ahead x up-of-the-world; straight up or down has no such thing.
+  float right[3] = {f[1], -f[0], 0.0f};
+  const float rl = std::sqrt(right[0] * right[0] + right[1] * right[1]);
+  if (rl < 1e-4f) return;
+  right[0] /= rl;
+  right[1] /= rl;
+  const float up[3] = {right[1] * f[2] - right[2] * f[1], right[2] * f[0] - right[0] * f[2], right[0] * f[1] - right[1] * f[0]};
+  const float back[3] = {-f[0], -f[1], -f[2]};
+  const auto dot = [&](const float a[3]) { return eye[0] * a[0] + eye[1] * a[1] + eye[2] * a[2]; };
+  const float view[16] = {right[0], up[0], back[0], 0.0f, right[1], up[1], back[1], 0.0f, right[2], up[2], back[2], 0.0f,
+                          -dot(right), -dot(up), -dot(back), 1.0f};
+  std::memcpy(reinterpret_cast<void*>(camera + p.cameraView), view, sizeof(view));
+  std::memcpy(reinterpret_cast<void*>(camera + p.cameraPosition), eye, 3 * sizeof(float));
+  if (horizontalFovDegrees > 1.0f && horizontalFovDegrees < 179.0f) {
+    // The projection keeps its own shape and depths; only how wide it sees.
+    float* projection = reinterpret_cast<float*>(camera + p.cameraProjection);
+    if (projection[0] > 0.01f && projection[5] > 0.01f) {
+      const float tall = projection[5] / projection[0];
+      projection[0] = 1.0f / std::tan(horizontalFovDegrees * 3.14159265f / 360.0f);
+      projection[5] = projection[0] * tall;
+    }
+  }
+}
+
+// On the game's thread, inside its frame, each time it has worked a camera out.
+uintptr_t OnCameraUpdate(void* object, float seconds) {
+  const uintptr_t result = g_cameraUpdate(object, seconds);
+  const Places& p = g_places;
+  const uintptr_t camera = reinterpret_cast<uintptr_t>(object);
+  const uintptr_t system = mem::Pointer(mem::ImageBase() + p.cameraSystem);
+  if (!mem::IsA(system, p.cameraSystemVtable) || mem::Pointer(system + p.systemCamera) != camera || !mem::IsA(camera, p.cameraVtable)) return result;
+
+  if (g_cameraTest.load(std::memory_order_relaxed)) {
+    // Round and round the player, looking at him: nothing to do with Spyro.
+    const uintptr_t list = mem::Pointer(mem::ImageBase() + p.actorList);
+    const uintptr_t actor = list ? mem::Pointer(list) : 0;
+    Vec3 at{};
+    if (actor && mem::IsA(actor, p.actorVtable) && mem::Read(actor + p.actorPosition, at)) {
+      const float turn = static_cast<float>(GetTickCount() % 8000) * (6.2831853f / 8000.0f);
+      const float eye[3] = {at.x + 400.0f * std::cos(turn), at.y + 400.0f * std::sin(turn), at.z + 220.0f};
+      const float ahead[3] = {at.x - eye[0], at.y - eye[1], at.z + 60.0f - eye[2]};
+      WriteView(camera, eye, ahead, 0.0f);
+    }
+    return result;
+  }
+
+  const SpyroGround& g = g_spyroGround;
+  HostState host{};
+  if (!g_viewBySpyro.load(std::memory_order_relaxed) || !g.joined || !g_link.PeerAlive() || !g_link.block()->host.Read(host) ||
+      !(host.flags & kHostGround) || !(host.flags & kHostCamera)) {
+    return result;
+  }
+  // Spyro's camera, taken into Crash's world: where it is by the join, and
+  // the way it looks with y the other way (Unreal: pitch up, yaw from x to y).
+  const Vec3 eyeAt = GroundToCrash(g.join, host.cameraPosition);
+  const float pitch = host.cameraRotation.x * 3.14159265f / 180.0f, yaw = host.cameraRotation.y * 3.14159265f / 180.0f;
+  const float eye[3] = {eyeAt.x, eyeAt.y, eyeAt.z};
+  const float ahead[3] = {std::cos(pitch) * std::cos(yaw), -std::cos(pitch) * std::sin(yaw), std::sin(pitch)};
+  WriteView(camera, eye, ahead, host.cameraFov);
+  return result;
 }
 
 // The game's thread, straight after one of its frames.
@@ -881,9 +1012,11 @@ bool __fastcall OnFrame(void* client) {
 // The same decision for what Crash hears through Steam's controller
 // interface, which is how the player's controller actually reaches it.
 bool OnSteam(bool, uint64_t) {
-  if (!g_padOnlyInFront.load(std::memory_order_relaxed) || pad::GameInFront()) return false;
   HostState host{};
-  const bool linked = g_link.block() && g_link.PeerAlive() && g_link.block()->host.Read(host) && (host.flags & kHostLinked);
+  const bool have = g_link.block() && g_link.PeerAlive() && g_link.block()->host.Read(host);
+  const bool linked = have && (host.flags & kHostLinked);
+  if (have && (host.flags & kHostGround) && !linked) return true;  // held: see OnPad
+  if (!g_padOnlyInFront.load(std::memory_order_relaxed) || pad::GameInFront()) return false;
   return !linked;
 }
 
@@ -1097,9 +1230,18 @@ DWORD WINAPI Run(void*) {
                      reinterpret_cast<void**>(&g_frame), "Crash's frame")) {
     return 0;
   }
+  // The camera is extra: without it everything else still works.
+  const uintptr_t cameraUpdate = mem::ImageBase() + g_places.cameraUpdate;
+  if (mem::StartsWith(cameraUpdate, kCameraUpdatePrefix)) {
+    hook::Install(reinterpret_cast<void*>(cameraUpdate), reinterpret_cast<void*>(&OnCameraUpdate),
+                  reinterpret_cast<void**>(&g_cameraUpdate), "Crash's camera");
+  } else {
+    log::Error("the camera routine is not where it is in the known build (exe+0x%X): Crash's camera is left alone", g_places.cameraUpdate);
+  }
 
   std::string fence = config.GetString("debug", "fence"), slab = config.GetString("debug", "slab");
   std::string mesh = config.GetString("debug", "mesh"), clear = config.GetString("debug", "clear");
+  std::string watchCamera = config.GetString("debug", "watch_camera");
   DWORD lastReport = GetTickCount();
   bool steam = false;
   bool arriving = config.GetInt("start", "auto_load", 0) != 0;
@@ -1152,6 +1294,21 @@ DWORD WINAPI Run(void*) {
       if (meshNow != mesh) {
         mesh = meshNow;
         if (!meshNow.empty()) g_meshWanted.store(1);
+      }
+      // [debug] watch_camera = <offset> <bytes> #n: logs what code writes
+      // to that place in the camera object over the next three seconds.
+      const std::string watchNow = config.GetString("debug", "watch_camera");
+      if (watchNow != watchCamera) {
+        watchCamera = watchNow;
+        const uintptr_t system = mem::Pointer(mem::ImageBase() + g_places.cameraSystem);
+        const uintptr_t camera = mem::IsA(system, g_places.cameraSystemVtable) ? mem::Pointer(system + g_places.systemCamera) : 0;
+        char* end = nullptr;
+        const unsigned long offset = std::strtoul(watchNow.c_str(), &end, 0);
+        const unsigned long bytes = end ? std::strtoul(end, nullptr, 0) : 0;
+        if (!watchNow.empty() && mem::IsA(camera, g_places.cameraVtable)) {
+          log::Info("watch: the camera is at %p", reinterpret_cast<void*>(camera));
+          watch::Writers(camera + offset, bytes ? static_cast<int>(bytes) : 4, 3);
+        }
       }
       // [debug] clear = <anything>: takes out everything the bridge put in.
       const std::string clearNow = config.GetString("debug", "clear");

@@ -34,8 +34,9 @@ only_in_front = 1
 ; Following: Spyro's character is put where Crash is, every frame, and
 ; Spyro's own movement is switched off meanwhile. Pressing `key` (a Windows
 ; virtual-key number; 0x71 is F2) switches it on and off, and so does
-; changing `on` here and saving. It needs Crash on foot in a level and Spyro
-; in one.
+; changing `on` here and saving. Once on it stays asked for: it begins when
+; Crash is standing still in a level and Spyro is standing in one, and
+; begins again by itself after Spyro changes level.
 on = 0
 key = 0x71
 ; 1 = Spyro's ground goes to Crash to stand on, and the two worlds are laid

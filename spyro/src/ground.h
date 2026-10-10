@@ -31,6 +31,12 @@ struct Stats {
   int used = 0;
   int meshes = 0, convexes = 0, boxes = 0, spheres = 0, capsules = 0, heightFields = 0, others = 0;
   int notSolid = 0;  // left out: does not block the channel, or is the other kind of collision
+  // Left out: blocks pawns, but the player's own pawn does not block its
+  // kind, and the engine goes by whichever of the two is the more lenient
+  // (so the pawn passes through: pickups).
+  int passedThrough = 0;
+  bool pawnFound = false;    // the player's own capsule was among the shapes
+  uint32_t pawnBlocks = 0;   // and this is the bit for each channel it blocks
   int characters = 0;  // left out: is itself a pawn
   uint32_t triangles = 0;
   bool full = false;  // stopped at maxTriangles

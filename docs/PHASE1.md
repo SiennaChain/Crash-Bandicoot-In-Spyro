@@ -296,12 +296,18 @@ lock:
    or complex collision. Kept: shapes that **block the Pawn channel** and
    are **simple** collision, and are not themselves pawns. That is what the
    engine moves its own characters against.
+   And one thing more, since the engine goes by the more lenient of the two
+   parties: the shape's own kind has to be one **the player's capsule
+   blocks**. The player's capsule is the pawn capsule nearest the middle of
+   the box, and its `word1` says what it blocks (`0xFC003EEF`). Without
+   this, 48 balls of channel 15 around the home world were being sent as
+   solid: pickups, which the player runs through.
 3. Each kept shape becomes triangles in the world: a triangle mesh's own,
    a convex's sides as fans, a box as twelve, a ball or capsule coarsely.
    Only triangles reaching into the box are kept.
 
 In Sunrise Spring, 60 m (6,000 units) each way from the pawn: 557 shapes
-touched, 92 kept, **18,772 triangles, in 0.5 to 1 ms**. Nearly all of them
+touched, 44 kept, **15,892 triangles, in 0.5 to 1 ms**. Nearly all of them
 come from 4 meshes: the level has collision meshes made for the purpose,
 marked simple and complex both, and its 193 detailed meshes are complex
 only and are left out. Drawn from above, what comes out is plainly the
@@ -373,6 +379,31 @@ from the player in the picture the player has. `[ground] steer_by_spyro =
 0` turns it off. (Writing Spyro's view into Crash's camera is still wanted
 for Phase 2, which draws from it.)
 
+## Following, once it is on
+
+Following is asked for with the key or the setting and stays asked for
+until one of them ends it. What interrupts it does not end it:
+
+- **It begins only when it can be right.** The join is between where the
+  two are standing, so it waits until Crash has been still for 0.3 s (not
+  in a jump or a fall) and there is ground under Spyro's pawn (there is
+  none while a level is still arriving).
+- **Spyro paused or in a menu.** The pawn stops ticking, so `kHostLinked`
+  drops, but `kHostGround` stays up: Crash keeps Spyro's ground and hears
+  no controller. Seen: Start pressed in Spyro with following on, Crash
+  stayed where he was for six seconds on Spyro's ground, and carried on
+  when Start was pressed again; the ground was not rebuilt.
+- **Spyro going to another level, or Crash being restarted.** Following
+  lets go and takes up again by itself with a new join. Not yet seen.
+
+When Spyro's ground does go (following ended, or Spyro gone), Crash must
+be left standing on something. If he is no lower than he was when his own
+level's ground was taken out, that ground goes back in: it is under him, or
+he drops onto it. If he is lower, it would come back *around* him (seen:
+he hung inside the platform, creeping upward), so it stays out and the
+bridge puts a 6 m slab under his feet where he is, until Spyro's ground
+returns. Seen both ways, and a second join made from the slab.
+
 ## The join, seen
 
 2026-10-10, Spyro in Sunrise Spring, Crash in the Crash 3 hub, nobody at
@@ -399,6 +430,24 @@ three meshes went back, Spyro's ground came out, both games carried on.
 The first step forward shows the pawn moving 77 for Crash's 49: Crash was
 still walking in from the hub's entrance when following began, and the
 table's first row is from just before.
+
+**Ledges and walls**, the same day, with Crash in the empty level. Beside
+where the save starts there is a ledge 37 to 40 units high, found in the
+collision dump (`[debug] ground`), and the bridge's controller took him
+over it both ways:
+
+| | Pawn's height | Ground under the pawn |
+|---|---|---|
+| Walked off the top | 40.0 lower | 24.2 (standing on the lower level) |
+| Jumped at it from below, stick held | 39.8 higher | 24.2 (standing on top) |
+| Walked back to the top's edge | the same | 64.1 |
+
+The last row is Crash's own way with an edge: he stands with his middle up
+to about 10 units past it, held by the width of his capsule, with the lower
+level a full 40 further down under his middle. One more step and he drops.
+Run at the ledge's face from below he gets no further than 13.6 from it,
+and run along a wall that faces him at an angle he slides along it. A wall
+met head on, and all of this by hand, are still to be seen.
 
 ## A flat world for Crash to be in
 
@@ -483,9 +532,12 @@ was changed, which is how the mod could carry it later.
 6. ~~Join them.~~ Done: "The ground channel", "Crash's side: taking it in".
 7. ~~Steer Crash by Spyro's camera.~~ Done by turning the stick: "Steering".
 8. Played by hand: a wall, a ledge up and a ledge down, a jump across a gap,
-   in more than one place. This is what "done" above asks for.
+   in more than one place. This is what "done" above asks for. (A ledge
+   both ways and a slide along a wall have been seen with the bridge's own
+   controller: "Ledges and walls".)
 9. ~~Crash's own level out of the way altogether.~~ Done: "The empty
-   level". Still to do there: put Crash back on his platform when following
-   ends, rather than leave him to fall.
+   level". When following ends he is left on his platform or on a slab
+   ("Following, once it is on"); putting him somewhere chosen needs a way
+   to move him, which Phase 3's respawns need too.
 10. Ground that moves (Spyro's platforms and doors), and Spyro's water,
     which is not ground.

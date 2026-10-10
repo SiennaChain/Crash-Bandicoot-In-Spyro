@@ -134,9 +134,11 @@ enum HostFlags : uint32_t {
   // controller's movement and buttons are Crash's, whichever window is in
   // front.
   kHostLinked = 1u << 2,
-  // And Spyro's ground is being sent for Crash to stand on (the ground
-  // mapping, below), the two worlds laid over each other rigidly. Crash
-  // then steers by Spyro's camera, the one the player is looking through.
+  // Spyro's ground is being sent for Crash to stand on (the ground mapping,
+  // below), the two worlds laid over each other rigidly. With kHostLinked,
+  // Crash steers by Spyro's camera, the one the player is looking through.
+  // Without it (Spyro paused, or in a menu) Crash keeps the ground and
+  // stands still: he hears no controller until Spyro is running again.
   kHostGround = 1u << 3,
 };
 

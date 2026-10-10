@@ -36,7 +36,8 @@ if(WIN32)
     common/session.cpp
     common/shm.cpp
     common/standin.cpp
-    common/steampad.cpp)
+    common/steampad.cpp
+    common/watch.cpp)
   target_link_libraries(csp_common PUBLIC csp_protocol minhook)
   target_compile_definitions(csp_common PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 

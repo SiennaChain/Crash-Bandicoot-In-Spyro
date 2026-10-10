@@ -220,6 +220,22 @@ bool Gather(const csp::Vec3& centre, const Options& options, std::vector<float>&
     scene->lockRead(__FILE__, __LINE__);
     Touches touches;
     scene->overlap(box, boxPose, touches, everything, nullptr);
+    // The player's own capsule: the pawn's capsule nearest the middle. What
+    // it blocks is half of whether a thing is solid to it.
+    uint32_t pawnBlocks = ~0u;
+    float nearest = 300.0f * 300.0f;
+    for (const PxOverlapHit& hit : touches.all) {
+      if (!hit.shape || !hit.actor || hit.shape->getGeometryType() != PxGeometryType::eCAPSULE) continue;
+      const PxFilterData filter = hit.shape->getQueryFilterData();
+      if (ChannelOf(filter.word3) != kChannelPawn) continue;
+      const float apart = ((hit.actor->getGlobalPose() * hit.shape->getLocalPose()).p - c).magnitudeSquared();
+      if (apart < nearest) {
+        nearest = apart;
+        pawnBlocks = filter.word1;
+        stats.pawnFound = true;
+        stats.pawnBlocks = pawnBlocks;
+      }
+    }
     for (const PxOverlapHit& hit : touches.all) {
       if (!hit.shape || !hit.actor) continue;
       ++stats.touched;
@@ -235,6 +251,10 @@ bool Gather(const csp::Vec3& centre, const Options& options, std::vector<float>&
       }
       if (!blocks || !(options.complex ? complex : simple)) {
         ++stats.notSolid;
+        continue;
+      }
+      if (!((pawnBlocks >> channel) & 1)) {
+        ++stats.passedThrough;
         continue;
       }
       const PxTransform pose = hit.actor->getGlobalPose() * hit.shape->getLocalPose();
