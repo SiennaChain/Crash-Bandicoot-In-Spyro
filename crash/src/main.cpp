@@ -65,7 +65,15 @@ using namespace csp;
   X(clockSimTicks, 0x20)            \
   X(clockPaused, 0x2C)              \
   /* the client */                  \
-  X(clientLevelName, 0xB8)
+  X(clientLevelName, 0xB8)          \
+  /* Havok (docs/PHASE1.md) */      \
+  X(physicsSystem, 0x1A918C0)       \
+  X(systemWorld, 0x38)              \
+  X(worldVtable, 0x1854058)         \
+  X(worldBodies, 0x20)              \
+  X(compressedMeshVtable, 0x18579E8) \
+  X(bodyCinfoCtor, 0x10D6B30)       \
+  X(createBody, 0x10E5CA0)
 
 struct Places {
 #define X(name, value) uint32_t name = value;
@@ -77,6 +85,9 @@ struct Places {
 // encrypted and unpacks itself as it starts, after this DLL is loaded, so
 // these bytes turning up is also how we know the code is there to hook.
 constexpr char kFramePrefix[] = "48895c240848896c2410488974241848897c242041564883";
+// And the two of Havok's routines the bridge calls.
+constexpr char kBodyCinfoCtorPrefix[] = "48895c2408574883ec20488bd94883c1";
+constexpr char kCreateBodyPrefix[] = "44894c24204c8944241853555657415441554156";
 
 HMODULE g_module = nullptr;
 std::wstring g_dir;
@@ -127,6 +138,137 @@ bool ReadText(uintptr_t address, char* out, size_t size) {
   if (length == 0 || length >= size) return false;
   std::memcpy(out, buffer, length + 1);
   return true;
+}
+
+// ------------------------------------------------------------------ Havok --
+//
+// Phase 1's first experiment (docs/PHASE1.md): can the bridge put a body of
+// its own into Crash's physics world, and is Crash stopped by it? The body
+// is as plain as can be made: a copy, standing still, of Crash's own capsule
+// shape, so no shape has to be built. A row of them close together is a
+// fence he cannot slip through.
+//
+// An hknpBody is 0x90 bytes: position at +0x30 (metres; the game's units
+// are inches), collision filter +0x44, shape +0x48, motion +0x68 (0 = it
+// does not move), material +0x70, and at +0x88 the game's own word for it,
+// which for a character is its actor with the low bit set.
+constexpr uint32_t kBodySize = 0x90;
+struct Body {
+  float position[4];
+  uint32_t filter;
+  uintptr_t shape;
+  uint32_t motion;
+  uint16_t material;
+  uintptr_t userData;
+};
+
+bool ReadBody(uintptr_t bodies, uint32_t number, Body& out) {
+  uint8_t raw[kBodySize];
+  if (!mem::Read(bodies + uintptr_t{kBodySize} * number, raw, sizeof(raw))) return false;
+  std::memcpy(out.position, raw + 0x30, sizeof(out.position));
+  std::memcpy(&out.filter, raw + 0x44, sizeof(out.filter));
+  std::memcpy(&out.shape, raw + 0x48, sizeof(out.shape));
+  std::memcpy(&out.motion, raw + 0x68, sizeof(out.motion));
+  std::memcpy(&out.material, raw + 0x70, sizeof(out.material));
+  std::memcpy(&out.userData, raw + 0x88, sizeof(out.userData));
+  return true;
+}
+
+std::atomic<int> g_fenceWanted{0};
+// How the new bodies are handed to the world: createBody's fourth argument.
+// 0 makes a body and leaves it out of the world (what the game does for
+// things not yet switched on: the first try here, and Crash ran through
+// them); 1 puts it in at once; 2 has the world put it in at its next step.
+std::atomic<int> g_fenceMode{2};
+// What marks a still body as something Crash is stopped by. The walkable
+// mesh of both levels looked at carries this.
+std::atomic<uint32_t> g_fenceFilter{0x017F0803};
+
+// On the game's thread, between frames, which is when the game makes bodies
+// of its own.
+void PutUpFence(uintptr_t actor, const GuestState& state) {
+  const Places& p = g_places;
+  const uintptr_t base = mem::ImageBase();
+  const uintptr_t makeCinfo = base + p.bodyCinfoCtor, createBody = base + p.createBody;
+  if (!mem::StartsWith(makeCinfo, kBodyCinfoCtorPrefix) || !mem::StartsWith(createBody, kCreateBodyPrefix)) {
+    log::Error("havok: the routines for making a body are not where they are in the known build");
+    return;
+  }
+  const uintptr_t system = mem::Pointer(base + p.physicsSystem);
+  const uintptr_t world = system ? mem::Pointer(system + p.systemWorld) : 0;
+  const uintptr_t bodies = mem::IsA(world, p.worldVtable) ? mem::Pointer(world + p.worldBodies) : 0;
+  if (!bodies) {
+    log::Error("havok: no physics world found");
+    return;
+  }
+
+  // Crash's own body, for his shape and where he is; and the level's ground,
+  // for what a still body has to be marked as for him to be stopped by it.
+  Body crash{}, ground{};
+  bool haveCrash = false, haveGround = false;
+  for (uint32_t number = 1; number < 4096 && !(haveCrash && haveGround); ++number) {
+    Body body{};
+    if (!ReadBody(bodies, number, body)) break;
+    if (!haveCrash && body.shape && body.userData == (actor | 1)) {
+      crash = body;
+      haveCrash = true;
+    }
+    if (!haveGround && body.motion == 0 && body.filter == g_fenceFilter.load() && mem::IsA(body.shape, p.compressedMeshVtable)) {
+      ground = body;
+      haveGround = true;
+    }
+  }
+  if (!haveCrash) {
+    log::Error("havok: could not find Crash's body among the world's bodies");
+    return;
+  }
+  if (!haveGround) {
+    // No mesh marked that way here: use the mark anyway, and Crash's own material.
+    ground.filter = g_fenceFilter.load();
+    ground.material = crash.material;
+  }
+
+  // Across the way he is facing as his camera sees it, a metre and a half on.
+  float aheadX = -state.view[2], aheadY = -state.view[6];
+  const float length = std::sqrt(aheadX * aheadX + aheadY * aheadY);
+  if (!(state.flags & kGuestCamera) || length < 0.25f) {
+    aheadX = 0.0f;
+    aheadY = 1.0f;
+  } else {
+    aheadX /= length;
+    aheadY /= length;
+  }
+  const float acrossX = aheadY, acrossY = -aheadX;
+  const float kAhead = 1.5f, kApart = 0.45f;
+
+  using MakeCinfo = void* (*)(void* cinfo);
+  using CreateBody = uint32_t* (*)(void* world, uint32_t* out, const void* cinfo, int flags, uint8_t more);
+  int made = 0;
+  uint32_t first = 0;
+  for (int k = -4; k <= 4; ++k) {
+    // hknpBodyCinfo: shape +0x00, motion +0x0C, material +0x12, filter
+    // +0x14, position +0x30, orientation +0x40. Havok fills in the rest.
+    alignas(16) uint8_t cinfo[0x200] = {};
+    reinterpret_cast<MakeCinfo>(makeCinfo)(cinfo);
+    const uint32_t still = 0;
+    const float position[4] = {crash.position[0] + aheadX * kAhead + acrossX * kApart * static_cast<float>(k),
+                               crash.position[1] + aheadY * kAhead + acrossY * kApart * static_cast<float>(k), crash.position[2], 0.0f};
+    std::memcpy(cinfo + 0x00, &crash.shape, sizeof(crash.shape));
+    std::memcpy(cinfo + 0x0C, &still, sizeof(still));
+    std::memcpy(cinfo + 0x12, &ground.material, sizeof(ground.material));
+    std::memcpy(cinfo + 0x14, &ground.filter, sizeof(ground.filter));
+    std::memcpy(cinfo + 0x30, position, sizeof(position));
+    uint32_t number = 0x7FFFFFFF;
+    reinterpret_cast<CreateBody>(createBody)(reinterpret_cast<void*>(world), &number, cinfo, g_fenceMode.load(), 0);
+    if (number != 0x7FFFFFFF) {
+      if (!made) first = number;
+      ++made;
+    }
+  }
+  log::Info("havok: %d still copies of Crash's capsule in a row %.1f m ahead of him, %.2f m apart (the first is body %u). "
+            "He is at (%.2f, %.2f, %.2f) m; marked with filter 0x%08X, material %u (%s); handed over in mode %d",
+            made, kAhead, kApart, first, crash.position[0], crash.position[1], crash.position[2], ground.filter, ground.material,
+            haveGround ? "as a mesh of the level's is" : "no mesh of the level's is marked so", g_fenceMode.load());
 }
 
 // The game's thread, straight after one of its frames.
@@ -184,6 +326,8 @@ void Sample(uintptr_t client) {
   g_link.Frame();
   g_flags.store(s.flags);
   g_generation.store(generation);
+
+  if ((s.flags & kGuestPlayer) && g_fenceWanted.exchange(0)) PutUpFence(actor, s);
 }
 
 bool __fastcall OnFrame(void* client) {
@@ -437,6 +581,15 @@ DWORD WINAPI Run(void*) {
     if (config.Changed()) {
       LoadPlaces(config);
       standin::DebugPress(config);
+      // [debug] fence = <anything>: each change of the text puts one up.
+      static std::string fence = config.GetString("debug", "fence");
+      const std::string now = config.GetString("debug", "fence");
+      g_fenceMode.store(config.GetInt("debug", "fence_mode", 2));
+      g_fenceFilter.store(config.GetOffset("debug", "fence_filter", 0x017F0803));
+      if (now != fence) {
+        fence = now;
+        if (!now.empty()) g_fenceWanted.store(1);
+      }
     }
     const DWORD every = static_cast<DWORD>(config.GetInt("debug", "status_seconds", 10)) * 1000;
     const bool due = every != 0 && static_cast<DWORD>(GetTickCount() - lastReport) >= every;
